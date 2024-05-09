@@ -1,0 +1,6 @@
+.vscode/
+data/
+build/
+*.bag
+docs/
+

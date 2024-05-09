@@ -1,0 +1,3 @@
+[submodule "include/mc_ring/libmorton"]
+	path = include/mc_ring/libmorton
+	url = git@github.com:Forceflow/libmorton.git

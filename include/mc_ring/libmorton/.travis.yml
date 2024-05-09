@@ -1,0 +1,14 @@
+dist: focal
+language: cpp
+compiler: gcc
+addons:
+  apt:
+    packages:
+      - cmake
+      - gcc-9 g++-9
+      - ninja-build
+script: 
+  - cmake -S . -B build/ -G Ninja -D CMAKE_BUILD_TYPE:STRING=Release -D CMAKE_INSTALL_PREFIX:PATH=../install
+  - ninja -C build/ install
+# This really should finish in less than 2 minutes - otherwise something's wrong
+  - timeout 120 ninja -C build/ test
