@@ -29,7 +29,8 @@ catkin build
 ```
 
 ## Test
-Download a ros data [bag](https://drive.google.com/file/d/1MyLyJzOX_KFJWhs0cSW6jwEC2t_l945Q/view?usp=drive_link) containing depth image, rgb image, and camera pose from Virtual Kitti 2 dataset, and a message in mask_kpts_msgs form containing segmentation and transformation estimation results.
+Download a ros data [bag](https://drive.google.com/file/d/1MyLyJzOX_KFJWhs0cSW6jwEC2t_l945Q/view?usp=drive_link) and put it in the bag folder.
+The bag contains depth image, rgb image, and camera pose from Virtual Kitti 2 dataset, and a message in mask_kpts_msgs form containing segmentation and transformation estimation results.
 
 Launch the test by
 ```
