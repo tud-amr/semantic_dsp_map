@@ -1,0 +1,15 @@
+<launch>
+    <!-- Before running the launch file. Make sure your conda environment is switched so that segmentation and tracking can work -->
+    <arg name="map_cfg" default="options.yaml" />
+
+    <arg name="object_info_cfg" default="object_info.csv" />
+
+    <arg name="tracker_cfg" default="coda.yaml" />
+
+    <node pkg="single_camera_tracking" type="instance_segmentation.py" name="instance_segmentation" output="screen" args="--yaml $(arg tracker_cfg)" />
+
+    <node pkg="single_camera_tracking" type="tracking" name="tracking" output="screen" args="$(arg tracker_cfg)" />
+
+    <!-- <node pkg="semantic_dsp_map" type="mapping" name="mapping" output="screen" args="$(arg map_cfg) $(arg object_info_cfg)" /> -->
+
+</launch>

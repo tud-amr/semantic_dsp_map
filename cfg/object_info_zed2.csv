@@ -1,0 +1,21 @@
+label_id,label,instance_id(-1 means not fixed),color_b,color_g,color_r
+0,background,65535,0,0,0
+1,road,65534,128,64,128
+2,sidewalk,65533,232,35,244
+3,building,65532,70,70,70
+4,wall,65531,156,102,102
+5,fence,65530,153,153,190
+6,pole,65529,153,153,153
+7,traffic_light,65528,30,170,250
+8,traffic_sign,65527,0,220,220
+9,vegetation,65526,35,142,107
+10,terrain,65525,152,251,152
+11,sky,65524,180,130,70
+12,person,-1,60,20,220
+13,rider,65522,0,0,255
+14,Vehicle,-1,142,0,0
+15,truck,65521,70,0,0
+16,bus,65520,100,60,0
+17,train,65519,100,80,0
+18,motorcycle,65518,230,0,0
+19,bicycle,65517,32,11,119

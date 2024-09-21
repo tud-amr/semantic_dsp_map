@@ -1,18 +1,30 @@
-beyesian_movement_decrement: 0.2
+depth_image_topic: /camera/depth_repub
+camera_pose_topic: /camera/pose_repub
+mask_group_topic: /mask_group_super_glued
+frame_id: map
+visualize_with_zero_center: true
+
+beyesian_movement_decrement: 0.1
 beyesian_movement_distance_threshold: 0.1
-beyesian_movement_increment: 0.3
+beyesian_movement_increment: 0.2
 beyesian_movement_probability_threshold: 0.5
-detection_probability: 0.98
-forgetting_rate: 1.0
-if_consider_depth_noise: false
-if_consider_tracking_noise: false
+detection_probability: 0.6
+
+if_consider_depth_noise: true
 if_out_evaluation_format: true
 if_output_freespace: false
-if_use_independent_filter: false
-if_use_pignistic_probability: false
-if_use_template_matching: false
+if_use_independent_filter: true
+
 match_score_threshold: 0.6
-max_obersevation_lost_time: 5
-nb_ptc_num_per_point: 3
-noise_number: 0.001
-occupancy_threshold: 0.8
+max_obersevation_lost_time: 10
+nb_ptc_num_per_point: 1
+noise_number: 0.6
+occupancy_threshold: 0.1
+
+depth_noise_model_first_order: 0.01
+depth_noise_model_zero_order: 0.2
+
+# Useful when if_use_independent_filter is false
+forgetting_rate: 0.5
+max_forget_count: 3
+id_transition_probability: 0.2

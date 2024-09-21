@@ -12,8 +12,8 @@
 
 #pragma once
 
-#include "data_base.h"
-#include "basic_algorithms.h"
+#include "utils/data_base.h"
+#include "utils/basic_algorithms.h"
 #include "mc_ring/buffer.h"
 
 /// @brief A simple class to store which object has which particle to build the
@@ -135,7 +135,6 @@ public:
     /// @param points_groups 
     /// @param time_deltas 
     void estimate(const std::vector<std::vector<Eigen::Vector3d>>& points_groups, const std::vector<std::vector<Eigen::Vector3d>>& points_groups_last_frame, const std::vector<double>& time_deltas) {
-        /// TODO: IMPROVE the estimation. CHG.
         // Check if the size of points_groups is equal to the size of points_groups_last_frame
         if(points_groups.size() != points_groups_last_frame.size()){
             std::cout << "The size of points_groups is not equal to the size of points_groups_last_frame!" << std::endl;
@@ -158,12 +157,8 @@ public:
 
         translationVelocity = translationVelocitySum / (points_groups.size() - 1);
         angularVelocity = angularVelocitySum / (points_groups.size() - 1);
-
-        /// TEST CODE. CHG.
-        angularVelocity = Eigen::Vector3d::Zero();
-        translationVelocity.y() = 0;
-
     }
+
 
     /// @brief This function predicts the future positions of a set of points using the previously estimated translational and angular velocities
     /// @param last_points 
@@ -174,9 +169,6 @@ public:
 
         Eigen::AngleAxisd rotation(delta_time * angularVelocity.norm(), angularVelocity.normalized());
         Eigen::Quaterniond q(rotation);
-
-        // std::cout << "translationVelocity: " << translationVelocity.transpose() << std::endl;
-        // std::cout << "angularVelocity: " << angularVelocity.transpose() << std::endl;
 
         std::vector<Eigen::Vector3d> predicted_points;
         for (const auto& point : last_points) {
@@ -196,11 +188,10 @@ public:
 
         Eigen::Vector3d predictedTranslation = translationVelocity * delta_time;
 
-        /// TODO: CHECK. rotation seems to be wrong with two angularVelocity
         Eigen::AngleAxisd rotation(delta_time * angularVelocity.norm(), angularVelocity.normalized());
         Eigen::Quaterniond q(rotation);
 
-        T_predicted.block<3,3>(0,0) = q.toRotationMatrix();
+        T_predicted.block<3,3>(0,0) = Eigen::Matrix3d::Identity(); // Predict no rotation if not observed
         T_predicted.block<3,1>(0,3) = predictedTranslation;
 
         return T_predicted;
@@ -238,7 +229,7 @@ public:
         // Remove too old transformations
         while(reference_point_vec_.size() > 0)
         {
-            /// TODO: Make the too old time step a variable. CHG
+            /// TODO: Make the too old time step a variable.
             if(global_time_stamp - t_matrix_time_stamp_vec_[0] > 10){
                 t_matrix_vec_.erase(t_matrix_vec_.begin());
                 delta_t_vec_.erase(delta_t_vec_.begin());
@@ -258,7 +249,7 @@ public:
         }
 
         // The object is updated (can be used for prediction) only if the number of transformations is no less than 2
-        if(t_matrix_vec_.size() < 3){
+        if(t_matrix_vec_.size() < 2){
             updated_ = false;
             return;
         }
@@ -306,7 +297,7 @@ private:
 };
 
 
-/// TODO: Remove MJ Representation. Use simple object representation. CHG
+/// TODO: Remove MJ Representation. Use simple object representation. Multi-joint object is not used in the current version.
 /// @brief A struct to store the data of an object with multiple joints (MJ) / rigidbodies, e.g., human, manipulator
 class MJObject
 {   
@@ -397,12 +388,14 @@ public:
     void addNewObject(const MJObject &object, int track_id = -1){
         ObjectInTracking obj;
         if(track_id == -1){
+            // Assign a new track id
             obj.track_id = new_track_id_;
             new_track_id_++;
-            if(new_track_id_ > 1000000){
+            if(new_track_id_ > 65535){
                 new_track_id_ = 0;
             }
         }else{
+            // Use the given track id
             obj.track_id = track_id;
         }
         
@@ -449,9 +442,12 @@ public:
             ++count;
         }
 
+#if VERBOSE_MODE == 1
         std::cout << "global_time_stamp: " << global_time_stamp << std::endl;
         std::cout << "Remove " << count << " old objects." << std::endl;
         std::cout << "The number of objects in the tracking set is " << object_tracking_hash_map.size() << std::endl;
+#endif
+
     }
 
     /// @brief Check if an object exists in the object_tracking_hash_map by its track_id
@@ -461,52 +457,7 @@ public:
         return object_tracking_hash_map.count(track_id) > 0;
     }
 
-    /// @brief: Update the object in the tracking set with the new observation using ground truth tracking
-    // void updateWithGroundTruthTracking(const int object_in_tracking_id, const MJObject &new_observation)
-    // {
-    //     auto *object_in_tracking = &object_tracking_hash_map[object_in_tracking_id];
-
-    //     // Calculate the rigid body transformation matrix. Only one rigid body is considered here.
-    //     std::vector<Eigen::Matrix4d> transformation_matrix_vec;
-
-    //     Eigen::Quaterniond q1 = object_in_tracking->object.orientation;
-    //     Eigen::Quaterniond q2 = new_observation.orientation;
-    //     Eigen::Vector3d p1 = object_in_tracking->object.position;
-    //     Eigen::Vector3d p2 = new_observation.position;
-
-    //     Eigen::Matrix4d transformation_matrix = Eigen::Matrix4d::Identity();
-
-    //     transformation_matrix.block<3,3>(0,0) = q1.toRotationMatrix().transpose() * q2.toRotationMatrix();
-    //     transformation_matrix.block<3,1>(0,3) = p2 - transformation_matrix.block<3,3>(0,0) * p1;
-    //     transformation_matrix_vec.push_back(transformation_matrix);
-
-    //     // Check if the transformation is correct
-    //     Eigen::Vector3d p1_new = transformation_matrix_vec[0].block<3,3>(0,0) * p1 + transformation_matrix_vec[0].block<3,1>(0,3);
-    //     // std::cout << "p1_new = " << p1_new.transpose() << std::endl;
-    //     // std::cout << "p2 = " << p2.transpose() << std::endl;
-
-    //     // Check if the object moved
-    //     std::vector<bool> rigidbody_moved_vec;
-    //     bool object_moved = false;
-    //     if((p2 - p1).norm() > 0.01){
-    //         object_moved = true;
-    //     }else if((q1.toRotationMatrix().transpose() * q2.toRotationMatrix() - Eigen::Matrix3d::Identity()).norm() > 0.01){
-    //         object_moved = true;
-    //     }
-    //     rigidbody_moved_vec.push_back(object_moved);
-
-    //     object_in_tracking->object = new_observation;
-    //     object_in_tracking->observation_time_step = global_time_stamp;
-    //     object_in_tracking->observation_count++;
-    //     object_in_tracking->object.rigidbody_tmatrix_vec = transformation_matrix_vec;
-    //     object_in_tracking->object.rigidbody_moved_vec = rigidbody_moved_vec;
-
-    //     /// Note: these conditions should be transferred. to_match_with_templates has been transferred to addtional new-born part.
-    //     // object_in_tracking->to_match_with_previous = false;  // Do not match with old updates for the objects with ground truth tracking
-    //     // object_in_tracking->to_match_with_templates = false; // Do not match with templates for the objects not newly added
-    // }
-
-
+    
     /// @brief Update the object in the tracking set with the new observation using external tracking
     /// @param object_in_tracking_id Tracking id of the object to be updated
     /// @param new_observation The new observation
@@ -515,41 +466,57 @@ public:
     /// @param movement_probability_threshold The probability threshold to determine if the object moved as a condition in the Beyesian filter
     /// @param movement_increment The increment of the moved probability in the Beyesian filter
     /// @param movement_decrement The decrement of the moved probability in the Beyesian filter
-    void updateObject(const int object_in_tracking_id, const MJObject &new_observation, double transformation_confidence = 1.0, double movement_distance_threshold = 0.1, double movement_probability_threshold = 0.69, double movement_increment = 0.1, double movement_decrement = 0.15)
+    /// @param time_interval The interval from last observation to the current observation
+    void updateObject(const int object_in_tracking_id, const MJObject &new_observation, double transformation_confidence = 1.0, double movement_distance_threshold = 0.1, double movement_probability_threshold = 0.69, double movement_increment = 0.1, double movement_decrement = 0.15, double time_interval = 0.15, int moved_observation = -1)
     {
         auto *object_in_tracking = &object_tracking_hash_map[object_in_tracking_id];
 
         // Check if the object moved by checking the transformation matrix
         std::vector<bool> rigidbody_moved_vec;
 
-        bool object_moved = false;
+        bool object_moving = false;
         Eigen::Matrix4d transformation_matrix = new_observation.rigidbody_tmatrix_vec[0];
 
         Eigen::Vector4d reference_point_transformed = transformation_matrix * Eigen::Vector4d(new_observation.reference_point.x(), new_observation.reference_point.y(), new_observation.reference_point.z(), 1);
         Eigen::Vector3d reference_point_transition = Eigen::Vector3d(reference_point_transformed.x(), reference_point_transformed.y(), reference_point_transformed.z()) - new_observation.reference_point;
 
-        // std::cout << "** object_in_tracking_id = " << object_in_tracking_id << std::endl;
-        // std::cout << "reference_point = " << new_observation.reference_point.transpose() << std::endl;
-        std::cout << "reference_point_transition = " << reference_point_transition.transpose() << std::endl;
+#if SETTING == 0
+        object_moving = false;
 
-        /// Use a Beyesian filter to determine if the object moved to filter the noise.
-        /// TODO: Improve the moving determination. CHG. Consider accumulation if the transformation is small.
-        if(reference_point_transition.norm() > movement_distance_threshold && transformation_confidence > 0.8){
-            object_in_tracking->object.moved_probability += movement_increment;
+#elif SETTING == 1
+        object_moving = true;  // The object moved
+#else
+        // Use a Beyesian filter to determine if the object is moving or not
+        if(moved_observation == -1){
+            // Use the transformation to determine if the object moved
+            if(reference_point_transition.norm() > movement_distance_threshold){
+                object_in_tracking->object.moved_probability += movement_increment;
+            }else{
+                object_in_tracking->object.moved_probability -= movement_decrement;
+            }
         }else{
-            object_in_tracking->object.moved_probability -= movement_decrement;
+            // Use the moved_observation to determine if the object moved
+            if(moved_observation == 1){
+                object_in_tracking->object.moved_probability += movement_increment;
+            }else{
+                object_in_tracking->object.moved_probability -= movement_decrement;
+            }
         }
         
         if(object_in_tracking->object.moved_probability > movement_probability_threshold){
-            object_moved = true;  // The object moved
+            object_moving = true;  // The object is moving
         }else{
-            object_moved = false; // The object did not move
+            object_moving = false; // The object is not moving
         }
-        
+#endif
+
         // Limit the moved probability to [0,1]
         object_in_tracking->object.moved_probability = std::min(1.0, std::max(0.0, object_in_tracking->object.moved_probability));
 
-        rigidbody_moved_vec.push_back(object_moved);
+#if VERBOSE_MODE == 1
+        std::cout << "Object: " << object_in_tracking_id << " moved_probability = " << object_in_tracking->object.moved_probability << " determined to be moving = " << object_moving << std::endl;
+#endif
+        rigidbody_moved_vec.push_back(object_moving);
 
         // Update the object with the new observation
         object_in_tracking->object.time_stamp = new_observation.time_stamp;
@@ -559,16 +526,14 @@ public:
 
         object_in_tracking->observation_time_step = global_time_stamp;
         object_in_tracking->observation_count++;
-
-        object_in_tracking->to_match_with_previous = false;
+        
         ///Note: To_match_with_templates has been transferred to addtional new-born part.
-        // object_in_tracking->to_match_with_templates = false;
-
+        object_in_tracking->to_match_with_previous = false;
+        
         object_in_tracking->object.rigidbody_moved_vec = rigidbody_moved_vec;
 
-        /// TODO: Update for later prediction. Use a non-fixed time step. CHG
-        if(object_moved){
-            object_in_tracking->object.transformations.update(transformation_matrix, 0.2, new_observation.reference_point);
+        if(object_moving){
+            object_in_tracking->object.transformations.update(transformation_matrix, time_interval, new_observation.reference_point);
         }
         
     }
@@ -581,8 +546,6 @@ public:
 
         object_in_tracking->observation_time_step = global_time_stamp;
 
-        /// NOTE: Clear the transformations is not necessary!!! CHG
-        // object_in_tracking->object.transformations.clear();
         object_in_tracking->to_match_with_previous = true;
         object_in_tracking->to_match_with_templates = false;
     }
@@ -590,7 +553,7 @@ public:
 
     /// @brief Predict the tramnsformation matrix of the object in tracking if the object is not observed in this step
     /// @param object_in_tracking_id 
-    void predictAndSetTransformation(const int object_in_tracking_id)
+    void predictAndSetTransformation(const int object_in_tracking_id, double time_interval = 0.2)
     {
         auto *object_in_tracking = &object_tracking_hash_map[object_in_tracking_id];
 
@@ -599,12 +562,16 @@ public:
         Eigen::Matrix4d transformation_matrix = Eigen::Matrix4d::Identity();
         
         /// Use prediction if the object was observed so that the transformation estimation is valid.
-        if(object_in_tracking->object.transformations.predictTMatrix(0.2, transformation_matrix)){
+        if(object_in_tracking->object.transformations.predictTMatrix(time_interval, transformation_matrix)){
             // Print the predicted transformation matrix
-            std::cout << "transformation_matrix = " << transformation_matrix << std::endl;
+#if VERBOSE_MODE == 1
+            std::cout << "Predicted transformation_matrix = " << transformation_matrix << std::endl;
+#endif
             transformation_matrix_vec.push_back(transformation_matrix);
         }else{
+#if VERBOSE_MODE == 1
             std::cout << "No prediction for object_in_tracking_id = " << object_in_tracking_id << std::endl;
+#endif
             // Use the last transformation matrix if the object was not observed in this step
             transformation_matrix_vec = object_in_tracking->object.rigidbody_tmatrix_vec;
         }
@@ -642,7 +609,9 @@ private:
         if(rigidbody_num > 0){
             if(rigidbody_num != ob_ori.rigidbody_joint_seq.size())
             {
+#if VERBOSE_MODE == 1
                 std::cout << "The number of rigid bodies in the current object is not equal to the number of rigid bodies in the tracking object!" << std::endl;
+#endif
                 return -1;
             }
 
@@ -652,7 +621,9 @@ private:
                 
                 if(joint_num != ob_ori.rigidbody_joint_seq[i].size())
                 {
+#if VERBOSE_MODE == 1
                     std::cout << "The number of joints in the current rigid body is not equal to the number of joints in the tracking rigid body!" << std::endl;
+#endif
                     return -1;
                 }
 
@@ -668,7 +639,6 @@ private:
                 Eigen::Matrix4d transformation_matrix = estimateTransformation(P, Q);
                 transformation_matrix_vec.push_back(transformation_matrix);
             }
-            std::cout << "transformation_matrix_vec size =" << transformation_matrix_vec.size() << std::endl;
         }
 
         return 0;

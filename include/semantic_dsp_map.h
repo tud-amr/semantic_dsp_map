@@ -12,10 +12,11 @@
 #pragma once
 
 #include "object_layer.h"
-#include "pointcloud_tools.h"
+#include "utils/pointcloud_tools.h"
 #include "mc_ring/mt_operations.h"
-#include "tracking_result_handler.h"
-#include "visualization_tools.h"
+#include "utils/tracking_result_handler.h"
+#include "utils/object_info_handler.h"
+
 
 class SemanticDSPMap
 {
@@ -28,12 +29,17 @@ public:
         occupancy_threshold_(0.2), 
         max_obersevation_lost_time_(5),
         forgetting_rate_(1.0),
+        max_forget_count_(5),
+        id_transition_probability_(0.1),
         if_out_evaluation_format_(false),
         match_score_threshold_(0.3),
         beyesian_movement_distance_threshold_(0.1),
         beyesian_movement_probability_threshold_(0.69),
         beyesian_movement_increment_(0.1),
-        beyesian_movement_decrement_(0.15)
+        beyesian_movement_decrement_(0.15),
+        prediction_stddev_(0.05),
+        depth_noise_model_first_order_(0.0),
+        depth_noise_model_zero_order_(0.1)
     {
         // Initialize the color map for detected objects
         for(int i=0; i<256; ++i){
@@ -57,7 +63,7 @@ public:
         }
         
         // Initialize the gaussian random calculator
-        gaussian_random_.initialize(); 
+        gaussian_random_.calculateGaussianTable(prediction_stddev_); 
     };
 
     /// @brief Destructor
@@ -81,13 +87,6 @@ public:
         pt_tools_.setTemplate(template_path);
     }
 
-    /// @brief Set the flag to output evaluation format point cloud
-    /// @param if_consider_depth_noise
-    void useEvaluationFormat(bool if_out_evaluation_format)
-    {
-        if_out_evaluation_format_ = if_out_evaluation_format;
-    }
-
 
     /// @brief Set the parameters of the DSP map
     /// @param detection_probability
@@ -96,7 +95,10 @@ public:
     /// @param occupancy_threshold
     /// @param max_obersevation_lost_time
     /// @param forgetting_rate
-    void setMapParameters(float detection_probability, float noise_number, int nb_ptc_num_per_point, float occupancy_threshold, int max_obersevation_lost_time, float forgetting_rate, float match_score_threshold)
+    /// @param max_forget_count
+    /// @param match_score_threshold
+    /// @param id_transition_probability
+    void setMapParameters(float detection_probability, float noise_number, int nb_ptc_num_per_point, float occupancy_threshold, int max_obersevation_lost_time, float forgetting_rate=1.f, int max_forget_count = 5, float match_score_threshold=0.5, float id_transition_probability = 0.1)
     {
         detection_probability_ = detection_probability;
         noise_number_ = noise_number;
@@ -104,23 +106,34 @@ public:
         occupancy_threshold_ = occupancy_threshold;
         max_obersevation_lost_time_ = max_obersevation_lost_time;
         forgetting_rate_ = forgetting_rate;
+        max_forget_count_ = max_forget_count;
         match_score_threshold_ = match_score_threshold;
+        id_transition_probability_ = id_transition_probability;
+
+        std::cout << "max_obersevation_lost_time_ = " << max_obersevation_lost_time_ << std::endl;
+        std::cout << "id_transition_probability_ = " << id_transition_probability_ << std::endl;
     }
 
 
     /// @brief Set the parameters of the DSP map
     /// @param if_consider_depth_noise 
-    /// @param if_use_pignistic_probability 
     /// @param if_use_independent_filter 
-    void setMapOptions(bool if_consider_depth_noise, bool if_consider_tracking_noise, bool if_use_pignistic_probability, bool if_use_independent_filter, bool if_use_template_matching)
+    void setMapOptions(bool if_consider_depth_noise, bool if_use_independent_filter)
     {
         setFlagConsiderDepthNoise(if_consider_depth_noise);
-        setFlagConsiderTrackingNoise(if_consider_tracking_noise);
-        setFlagUsePignisticProbability(if_use_pignistic_probability);
         setFlagUseIndependentFilter(if_use_independent_filter);
-        setFlagUseTemplateMatching(if_use_template_matching);
     }
     
+    /// @brief Set visualization options
+    /// @param visualize_with_zero_center If true, the visualization voxels will be centered at (0, 0, 0). Otherwise, the visualization will be centered at the camera position.
+    /// @param if_out_evaluation_format If true, the output point cloud will be in evaluation format. No FOV check will be performed and the color will be based on the instance id.
+    void setVisualizeOptions(bool visualize_with_zero_center, bool if_out_evaluation_format)
+    {
+        visualize_with_zero_center_ = visualize_with_zero_center;
+        if_out_evaluation_format_ = if_out_evaluation_format;
+    }
+
+
     /// @brief Set the parameters of the Beyesian movement filter used in object level update
     /// @param distance_threshold 
     /// @param probability_threshold 
@@ -142,19 +155,45 @@ public:
         occupancy_threshold_ = threshold;
     }
 
-    
+    /// @brief  The function to set the noise model of the depth sensor. Noise stddev = first_order * distance + zero_order
+    /// @param first_order 
+    /// @param zero_order 
+    void setDepthNoiseModelParameters(float first_order, float zero_order)
+    {
+        depth_noise_model_first_order_ = first_order;
+        depth_noise_model_zero_order_ = zero_order;
+        std::cout << "Noise model is " << depth_noise_model_first_order_ << " * distance + " << depth_noise_model_zero_order_ << std::endl;
+    }
+
+
     /// @brief Update the map with input pose, images and point cloud. Output the occupied point cloud.
-    void update(const cv::Mat &depth_value_mat, const std::vector<MaskKpts> &ins_seg_result, const Eigen::Vector3d &camera_position, const Eigen::Quaterniond &camera_orientation, pcl::PointCloud<pcl::PointXYZRGB>::Ptr &occupied_point_cloud, pcl::PointCloud<pcl::PointXYZRGB>::Ptr &freespace_point_cloud, bool if_get_freespace=false)
+    void update(cv::Mat &depth_value_mat, std::vector<MaskKpts> &ins_seg_result, Eigen::Vector3d &camera_position, Eigen::Quaterniond &camera_orientation, pcl::PointCloud<pcl::PointXYZRGB>::Ptr &occupied_point_cloud, pcl::PointCloud<pcl::PointXYZRGB>::Ptr &freespace_point_cloud, bool if_get_freespace=false, double time_stamp_double=0.0)
     {
         // Update time stamp, which is used in both object level and sub-object level update
         global_time_stamp += 1; 
+#if VERBOSE_MODE == 1
+        std::cout << "************ Step " << global_time_stamp << " ************" << std::endl;
+        std::chrono::high_resolution_clock::time_point t1_obj = std::chrono::high_resolution_clock::now();
+#endif
+        // Reallocate Track ID if the track id is larger than the maximum movable object instance id
+        for(int i=0; i<ins_seg_result.size(); ++i)
+        {
+            if(ins_seg_result[i].label != "static" && ins_seg_result[i].track_id > g_max_movable_object_instance_id)
+            {
+                std::cout << "Reach the maximum movable object instance id. ID reallocated." << std::endl;
+                ins_seg_result[i].track_id = ins_seg_result[i].track_id % g_max_movable_object_instance_id;
+            }
+        }
 
         // Update the object set 
-        std::chrono::high_resolution_clock::time_point t1_obj = std::chrono::high_resolution_clock::now();
-        objectLevelUpdate(ins_seg_result, depth_value_mat, camera_position, camera_orientation);
-        
+        if(g_consider_instance){
+            objectLevelUpdate(ins_seg_result, camera_position, camera_orientation, time_stamp_double);
+        }
+
+#if VERBOSE_MODE == 1
         std::chrono::high_resolution_clock::time_point t2_obj = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> time_used_obj = std::chrono::duration_cast<std::chrono::duration<double>>(t2_obj - t1_obj);
+        
         std::cout << "Time used for object level update: " << time_used_obj.count() << " s" << std::endl;
 
         static double time_used_obj_sum = 0.0;
@@ -164,13 +203,20 @@ public:
         time_used_obj_count += 1;
 
         std::cout << "Average time used for object level update: " << time_used_obj_sum / time_used_obj_count << " s" << std::endl;
+#endif        
 
-        
         // Generate Labeled Point Cloud
         pt_tools_.updateCameraPose(camera_position, camera_orientation);
         
+        
+#if BOOST_MODE == 0
         int cols = depth_value_mat.cols;
         int rows = depth_value_mat.rows;
+#else
+        int cols = depth_value_mat.cols * g_image_rescale;
+        int rows = depth_value_mat.rows * g_image_rescale;
+#endif
+
         // Define a vector to store the labeled point cloud
         std::vector<std::vector<LabeledPoint>> labeled_point_cloud(rows, std::vector<LabeledPoint>(cols));
         // Define a map to store the points of each tracked object
@@ -178,7 +224,16 @@ public:
         std::unordered_map<int, int> track_to_label_id_map;
 
         // Generate the labeled point cloud
-        pt_tools_.generateLabeledPointCloud(depth_value_mat, ins_seg_result, labeled_point_cloud, tracked_objects_points, track_to_label_id_map);
+        pt_tools_.generateLabeledPointCloud(depth_value_mat, ins_seg_result, labeled_point_cloud, tracked_objects_points, track_to_label_id_map, depth_noise_model_first_order_, depth_noise_model_zero_order_);
+
+
+#if VERBOSE_MODE == 1
+        // Show the labeled point cloud using an image 
+        cv::Mat labeled_point_cloud_image;
+        pt_tools_.generateLabeledPointCloudInImage(labeled_point_cloud, labeled_point_cloud_image);
+        cv::imshow("labeled_point_cloud_image", labeled_point_cloud_image);
+        cv::waitKey(1);
+#endif
 
         // Add a high_resolution_clock to measure the time used for sub-object level update
         std::chrono::high_resolution_clock::time_point t1 = std::chrono::high_resolution_clock::now();
@@ -186,10 +241,13 @@ public:
         /// Sub-object level update (Particle update)
         subObjectLevelUpdate(labeled_point_cloud, tracked_objects_points, track_to_label_id_map, depth_value_mat, ins_seg_result, camera_position, camera_orientation, occupied_point_cloud, freespace_point_cloud, if_get_freespace);
         
+#if VERBOSE_MODE == 1
         std::chrono::high_resolution_clock::time_point t2 = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> time_used = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1);
         std::cout << "Time used for sub-object level update: " << time_used.count() << " s" << std::endl;
         std::cout << "occupied_point_cloud size = " << occupied_point_cloud->size() << std::endl;
+#endif
+
     }
 
 
@@ -206,8 +264,15 @@ private:
 
     GaussianRandomCalculator gaussian_random_; // The gaussian random calculator
 
-    float detection_probability_; // The detection probability of the sensor
+    std::unordered_map<int, std::vector<Eigen::Vector3d>> last_kpts_3d_map_; // A map to store the 3D keypoints of the last frame for each object for ZED2 setting
+    std::unordered_map<int, double> last_kpts_3d_time_stamp_map_; // A map to store the time stamp of the last frame for each object for ZED2 setting
 
+    std::unordered_map<int, std::vector<Eigen::Vector3d>> key_kpts_3d_map_; // A map to store the keypoints of the object for key frame setting
+    std::unordered_map<int, double> key_kpts_3d_time_stamp_map_; // A map to store the time stamp of the key frame for each object for key frame setting
+
+
+    float prediction_stddev_; // The standard deviation of the prediction
+    float detection_probability_; // The detection probability of the sensor
     float noise_number_; // The noise strength of the sensor
 
     int nb_ptc_num_per_point_; // The number of new born particles from each point
@@ -217,11 +282,16 @@ private:
     int max_obersevation_lost_time_; // The maximum number of observation lost time steps
 
     float forgetting_rate_; // The forgetting rate of the forgetting function for the update instances
+    int max_forget_count_; // The maximum number of forgetting count
+    float id_transition_probability_; // The probability of the transition from one instance to another
 
     float match_score_threshold_; // The threshold of the match score for template matching
 
     bool if_out_evaluation_format_; // If the output point ccloud is in evaluation format
+    bool visualize_with_zero_center_; // If the visualization is centered at (0, 0, 0)
 
+    float depth_noise_model_first_order_; // The first order coefficient of the depth noise model
+    float depth_noise_model_zero_order_; // The zero order coefficient of the depth noise model
 
     double beyesian_movement_distance_threshold_;
     double beyesian_movement_probability_threshold_;
@@ -231,19 +301,24 @@ private:
 
     /// @brief Object level update with real tracking result
     /// @param ins_seg_result 
-    /// @param depth_value_mat
     /// @param camera_position
     /// @param camera_orientation
-    void objectLevelUpdate(const std::vector<MaskKpts> &ins_seg_result, const cv::Mat &depth_value_mat, const Eigen::Vector3d &camera_position, const Eigen::Quaterniond &camera_orientation)
+    void objectLevelUpdate(const std::vector<MaskKpts> &ins_seg_result, const Eigen::Vector3d &camera_position, const Eigen::Quaterniond &camera_orientation, double time_stamp_double)
     {
-        std::cout << "----- Object level update. -----" << std::endl;
+        // std::cout << "----- Object level update. -----" << std::endl;
+
+        static double time_stamp_double_last = 0.0;
 
         // Iterate all the objects in ins_seg_result and update them
         std::unordered_set<int> object_ids_observed; // A set to store the object ids that are observed in this frame
         for(int i=0; i<ins_seg_result.size(); ++i)
         {
             // Ignore the static objects
-            if(ins_seg_result[i].track_id == 65535 || ins_seg_result[i].label == "static"){continue;}
+            if(ins_seg_result[i].track_id > g_max_movable_object_instance_id || ins_seg_result[i].label == "static"){continue;}
+
+#if VERBOSE_MODE == 1
+            std::cout << "Object " << ins_seg_result[i].label << " is observed." << std::endl;
+#endif
 
             // Get the object id of a movable object
             int object_id = ins_seg_result[i].track_id;
@@ -253,15 +328,18 @@ private:
             object.time_stamp = global_time_stamp;
             object.confidence = 1.f;
             
-            // object.label = label_id_map_default["Car"]; //ins_seg_result[i].label
-
-            // Check if the object is in the label_id_map_default
-            if(label_id_map_default.find(ins_seg_result[i].label) == label_id_map_default.end()){
-                std::cout << "Warning: Object " << object_id << " is not in the label_id_map_default. Ignore it." << std::endl;
+            // Check if the object is in the g_label_id_map_default
+            if(g_label_id_map_default.find(ins_seg_result[i].label) == g_label_id_map_default.end()){
+                std::cout << "Warning: Object " << object_id << " is not in the g_label_id_map_default. Ignore it." << std::endl;
                 continue;
             }
-            object.label = label_id_map_default[ins_seg_result[i].label]; 
+            object.label = g_label_id_map_default[ins_seg_result[i].label]; 
 
+#if SETTING == 1 || SETTING == 2
+            const int minimum_required_keypoints = 5; // Minimum number of Superpoints for one object
+#else
+            const int minimum_required_keypoints = 4; // 3D object detection result represented by 3D keypoints. Should have exactly 4 keypoints.
+#endif
 
             bool keypoint_method_success = false;
             // Three cases: 1. The object is newly observed. 2. The object is observed before and has enough keypoints for translation estimation. 3. The object is observed before but does not have enough keypoints.
@@ -275,20 +353,33 @@ private:
                     }
                 }
 
-                static double map_half_size = C_VOXEL_SIZE * (1 << (C_VOXEL_NUM_AXIS_N - 1));
-
-                if(closest_distance > map_half_size + 5.0){ // The object is too far away. Ignore it.
-                    std::cout << "Object " << object_id << " is too far away. Ignore adding it." << std::endl;
+                static const double map_half_size_scaled = C_VOXEL_SIZE * (1 << (C_VOXEL_NUM_AXIS_N_BIGGEST - 1)) * 1.2; // The map size is 1.2 times the half size of the map. 1.2 as a buffer.
+                if(closest_distance > map_half_size_scaled){ // The object is too far away. Ignore it.
+                    // std::cout << "Object " << object_id << " is too far away. Ignore adding it." << std::endl;
                     continue;
                 }
 
-                std::cout << "Case 1: Adding object " << object_id << std::endl;
+                // std::cout << "Case 1: Adding object " << object_id << std::endl;
+
                 object_set_.addNewObject(object, object_id);
+
                 keypoint_method_success = true;
 
-            }else if(ins_seg_result[i].kpts_current.size() >= 5){
+#if SETTING == 3
+                // Record the 3D keypoints for the object
+                last_kpts_3d_map_[object_id] = ins_seg_result[i].kpts_current;
+                last_kpts_3d_time_stamp_map_[object_id] = time_stamp_double;
+                key_kpts_3d_map_[object_id] = ins_seg_result[i].kpts_current;
+                key_kpts_3d_time_stamp_map_[object_id] = time_stamp_double;
+#endif
+
+
+            }else if(ins_seg_result[i].kpts_current.size() >= minimum_required_keypoints){
                 // Case 2: The object is observed before and has enough keypoints for translation estimation. Calculate the translation and update the object.
-                std::cout << "Case 2: Updating object " << object_id << ", kpt size = " << ins_seg_result[i].kpts_current.size() << std::endl;
+                // std::cout << "Case 2: Updating object " << object_id << ", kpt size = " << ins_seg_result[i].kpts_current.size() << std::endl;
+
+#if SETTING == 1 || SETTING == 2
+                // Handle the case of Superpoint keypoints. These are matched keypoints in the tracking node.
                 Eigen::MatrixXd last_kpts_3d(3, ins_seg_result[i].kpts_previous.size());
                 Eigen::MatrixXd current_kpts_3d(3, ins_seg_result[i].kpts_current.size());
 
@@ -303,20 +394,101 @@ private:
                 std::vector<int> inlier_indices;
 
                 Eigen::Matrix4d t_matrix;
-                double mse = estimateTransformationRANSAC(last_kpts_3d, current_kpts_3d, t_matrix, inlier_indices, 100, 0.5f, true);
                 
+                double mse = estimateTransformationRANSAC(last_kpts_3d, current_kpts_3d, t_matrix, inlier_indices, 100, 0.5f, true);
                 // Check if the transformation is valid
-                /// TODO: Improve the criteria for transformation validation
+                /// TODO: Improve the criteria for transformation validation for superpoint method
                 if(mse > 0.2f || inlier_indices.size() < 5 || inlier_indices.size() / static_cast<double>(ins_seg_result[i].kpts_current.size()) < 0.5f){
                     std::cout << "Transformation is not valid.mse = " << mse << ", inlier_indices.size = " << inlier_indices.size() << std::endl;
                     keypoint_method_success = false;
                     // Won't update the object if the transformation is not valid.
                 }else{
-                    // For now only one transformation matrix is used because the object is rigid.
+                    keypoint_method_success = true;
+                }
+#else           
+                // Handle the case of 3D keypoints from 3D object detection
+                Eigen::MatrixXd last_kpts_3d(3, 4); // 4 keypoints for 3D object detection
+                Eigen::MatrixXd current_kpts_3d(3, 4); // 4 keypoints for 3D object detection
+
+                std::vector<Eigen::Matrix4d> transformation_matrix_vec;
+                Eigen::Matrix4d t_matrix;
+
+                std::vector<int> inlier_indices;
+
+                // Check if object ketpoints are out of fov, which means they are not reliable in 3D object detection
+                bool out_of_fov = false;
+                for(const Eigen::Vector3d &pt : ins_seg_result[i].kpts_current){
+                    out_of_fov = isPointOutOfFOV(camera_position, camera_orientation, pt, 5); // 5 pixel as margin
+                }
+
+                double time_diff = time_stamp_double - last_kpts_3d_time_stamp_map_[object_id];
+                int moved_observation = 0;
+
+                // Check if last_kpts_3d_map_ has the 3D keypoints for the object
+                if(out_of_fov){
+                    // std::cout << "Warning: Object " << object_id << " keypoints are out of fov. Ignore updating it." << std::endl;
+                    keypoint_method_success = false;
+                }else if(last_kpts_3d_map_.find(object_id) == last_kpts_3d_map_.end()){
+                    std::cout << "Error: No 3D keypoints for object " << object_id << " in last_kpts_3d_map_. Ignore updating it." << std::endl;
+                    keypoint_method_success = false;
+                    // Update the last_kpts_3d_map_ of the object
+                    last_kpts_3d_map_[object_id] = ins_seg_result[i].kpts_current;
+                    last_kpts_3d_time_stamp_map_[object_id] = time_stamp_double;
+                    key_kpts_3d_map_[object_id] = ins_seg_result[i].kpts_current;
+                    key_kpts_3d_time_stamp_map_[object_id] = time_stamp_double;
+
+                }else{
+                    // Add to the matrix
+                    for(int j=0; j<ins_seg_result[i].kpts_current.size(); ++j){
+                        last_kpts_3d.col(j) = last_kpts_3d_map_[object_id][j];
+                        current_kpts_3d.col(j) = ins_seg_result[i].kpts_current[j];
+                    }
+                    
+                    estimateTransformationRANSAC(last_kpts_3d, current_kpts_3d, t_matrix, inlier_indices, 2, 0.5f, false);
+                    // estimateTransformationNoRotation(last_kpts_3d, current_kpts_3d, t_matrix);
+
+                    // Update the key_kpts_3d_map_ of the object
+                    double update_key_kpts_dist_threshold = beyesian_movement_distance_threshold_;
+                    Eigen::Vector3d width_vector = current_kpts_3d.col(1) - current_kpts_3d.col(0);
+                    double width = width_vector.norm();
+
+                    if(update_key_kpts_dist_threshold < width){
+                        update_key_kpts_dist_threshold = width;
+                    }
+
+                    double reference_point_moved_dist = (current_kpts_3d.col(0) - key_kpts_3d_map_[object_id][0]).norm();
+                    // Check if the reference point has moved enough to be determined as moving
+                    if(reference_point_moved_dist > update_key_kpts_dist_threshold){
+#if VERBOSE_MODE == 1
+                        std::cout << "reference_point_moved_dist=" << reference_point_moved_dist << ", update_key_kpts_dist_threshold=" << update_key_kpts_dist_threshold << std::endl;
+#endif
+
+                        moved_observation = 1;
+
+                    }
+                    
+                    // Update the key_kpts_3d_map_ of the object every 2 seconds
+                    if(time_stamp_double - key_kpts_3d_time_stamp_map_[object_id] > 2.0){
+                        key_kpts_3d_map_[object_id] = ins_seg_result[i].kpts_current;
+                        key_kpts_3d_time_stamp_map_[object_id] = time_stamp_double;
+                    }
+
+                    // Update the last_kpts_3d_map_ of the object
+                    last_kpts_3d_map_[object_id] = ins_seg_result[i].kpts_current;
+                    last_kpts_3d_time_stamp_map_[object_id] = time_stamp_double;
+
+                    keypoint_method_success = true;
+                }
+#endif
+               
+                if(keypoint_method_success){
+                    // For now, only one transformation matrix is used. Because the object is assumed to be rigid.
                     transformation_matrix_vec.push_back(t_matrix);
                     object.rigidbody_tmatrix_vec = transformation_matrix_vec;
 
                     double transformation_confidence = 1.0;
+
+#if SETTING == 1 || SETTING == 2
                     // Use a inlier keypoint as a reference point
                     if(!inlier_indices.empty()){
                         object.reference_point = last_kpts_3d.col(inlier_indices[0]);
@@ -326,17 +498,22 @@ private:
                     }else{
                         object.reference_point = last_kpts_3d.col(0);
                     }
-                    
-                    std::cout << "inlier_indices.size = " << inlier_indices.size() << std::endl;
+
+                    // Update the object to estimate the velocity.
+                    object_set_.updateObject(object_id, object, transformation_confidence, beyesian_movement_distance_threshold_, beyesian_movement_probability_threshold_, beyesian_movement_increment_, beyesian_movement_decrement_);
+#else
+                    // Use the first keypoint as a reference point
+                    object.reference_point = last_kpts_3d.col(0);
 
                     // Update the object to estimate the velocity
-                    object_set_.updateObject(object_id, object, transformation_confidence, beyesian_movement_distance_threshold_, beyesian_movement_probability_threshold_, beyesian_movement_increment_, beyesian_movement_decrement_);
-
-                    keypoint_method_success = true;
+                    object_set_.updateObject(object_id, object, transformation_confidence, beyesian_movement_distance_threshold_, beyesian_movement_probability_threshold_, beyesian_movement_increment_, beyesian_movement_decrement_, time_diff, moved_observation);
+#endif
+                    
                 }
                                
             }
 
+#if SETTING == 1 || SETTING == 2
             // Case 3: A dynamic object is observed before but does not have good keypoints currently. For textureless object or rematched objects after losing tracking. Use current point cloud to do rematching.
             if(!keypoint_method_success && object_set_.object_tracking_hash_map.at(object_id).object.rigidbody_moved_vec.size() > 0){
                 if(object_set_.object_tracking_hash_map.at(object_id).object.rigidbody_moved_vec[0]){
@@ -344,21 +521,23 @@ private:
                     /// Check if prediction is available
                     if(object_set_.object_tracking_hash_map.at(object_id).object.transformations.checkIfUpdated())
                     {
-                        std::cout << "Case 5: No much points but prediction available " << object_id << std::endl;
+                        // std::cout << "Case 5: No much points but prediction available " << object_id << std::endl;
                         object_set_.predictAndSetTransformation(object_id);
                     }
                     else
                     {
                         /// NOTE: TODO: When the object is too close, adding a distance threshold to avoid matching may be helpful.
-                        std::cout << "Case 3: Rematching object " << object_id << std::endl;
+                        // std::cout << "Case 3: Rematching object " << object_id << std::endl;
                         object_set_.setFlagsUpdateByMatching(object_id);
                         // Matching function is in the sub-object level prediction.
                     }
                 }
             }
+#endif
+
         }
 
-        // Case 4: Iterate the objects in object_tracking_hash_map that are not observed in this frame and update them with a prediction
+        // Prediction: Iterate the objects in object_tracking_hash_map that are not observed in this frame and update them with a prediction
         for(auto it = object_set_.object_tracking_hash_map.begin(); it != object_set_.object_tracking_hash_map.end(); ++it){
             // Check if the object is observed in this frame
             if(object_ids_observed.find(it->first) == object_ids_observed.end())
@@ -368,13 +547,22 @@ private:
                 // Check if the object was moving. If not, ignore it.
                 if(!it->second.object.rigidbody_moved_vec[0]){continue;}
 
-                std::cout << "Case 4: Predicting object " << it->first << std::endl;
+#if VERBOSE_MODE == 1
+                std::cout << "Predicting occluded object " << it->first << std::endl;
+#endif
                 // The object is not observed in this frame. Update it with a prediction.
-                object_set_.predictAndSetTransformation(it->first);
+                double time_diff = time_stamp_double - time_stamp_double_last;
+                if(abs(time_diff) > 1.0){ 
+                    time_diff = 1.0;
+                }
+                
+                object_set_.predictAndSetTransformation(it->first, time_diff);
             }
         }
 
-        std::cout << "Object update done. Object set size = " << object_set_.object_tracking_hash_map.size() << std::endl;
+        time_stamp_double_last = time_stamp_double;
+
+        // std::cout << "Object update done. Object set size = " << object_set_.object_tracking_hash_map.size() << std::endl;
     }
 
 
@@ -404,20 +592,22 @@ private:
 
         for(auto it = object_set_.object_tracking_hash_map.begin(); it != object_set_.object_tracking_hash_map.end(); ++it)
         {
-            // Ignore objects that is newly created
+            // Ignore objects that are newly created
             if(it->second.object.rigidbody_moved_vec.size() == 0){continue;}
             // Check if the object moved. If not, ignore it.
             if(!it->second.object.rigidbody_moved_vec[0]){continue;}
 
             if(global_time_stamp - it->second.observation_time_step >= max_obersevation_lost_time_)
             {
+#if VERBOSE_MODE == 1
                 std::cout << "Dynamic object " << it->first << " deleted because has been seen for a long time." << std::endl;
+#endif
                 // Record the object id to be removed and remove it later after the loop
                 objects_to_remove.push_back(it->first);
             }else{
                 // Move the particles of the object in obj_ptc_hash_map.
                 int track_id = it->second.track_id;
-                std::cout << "Checking track_id = " << track_id << std::endl;
+                // std::cout << "Checking track_id = " << track_id << std::endl;
                 if(object_set_.obj_ptc_hash_map.checkIfObjectExists(track_id))
                 {
                     auto obj_ptc_indices = object_set_.obj_ptc_hash_map.indices_map.at(track_id);
@@ -447,7 +637,6 @@ private:
                                     }
                                 }
 
-                                std::cout << "Object point cloud size = " << object_point_cloud->points.size() << std::endl;
                                 if(object_point_cloud->points.size() < 100){
                                     break;
                                 }
@@ -470,9 +659,9 @@ private:
                                     op_mt_.addMatchedParticles(aligned_particles_point_cloud, it->second.object.label, it->second.track_id, new_ptc_indices);
                                     // Update the hash map
                                     object_set_.obj_ptc_hash_map.updatePtcIndicesOfObj(track_id, new_ptc_indices);
-                                    std::cout << "Match score = " << match_score << ", good enough for matching." << std::endl;
+                                    // std::cout << "Match score = " << match_score << ", good enough for matching." << std::endl;
                                 }else{
-                                    std::cout << "Match score = " << match_score << ", not good enough for matching." << std::endl;
+                                    // std::cout << "Match score = " << match_score << ", not good enough for matching." << std::endl;
                                 }
 
                                 break;
@@ -488,20 +677,11 @@ private:
                         ptc_indices_to_move.push_back(obj_ptc_indices);
                         t_matrices_to_move.push_back(tranformation_matrix_f);
                         track_ids_to_move.push_back(track_id);
-
-                        // // Show tranformation_matrix_f
-                        // std::cout << "tranformation_matrix_f = " << tranformation_matrix_f << std::endl;
-                        // std::cout << "obj_ptc_indices size = " << obj_ptc_indices.size() << std::endl;
-
-                        // // Move particles in the ring buffer
-                        // std::unordered_set<uint32_t> obj_ptc_indices_new;
-                        // op_mt_.moveParticlesInSetByTransformation(obj_ptc_indices, tranformation_matrix_f, obj_ptc_indices_new);
-                        
-                        // // Update the hash map
-                        // object_set_.obj_ptc_hash_map.updatePtcIndicesOfObj(track_id, obj_ptc_indices_new);
-
-                        // std::cout << "Transformation overflowed particle num = " << obj_ptc_indices.size() - obj_ptc_indices_new.size() << std::endl;
-                    }
+#if VERBOSE_MODE == 1
+                        std::cout << "Object " << track_id << " with points size = " << obj_ptc_indices.size() << " moved by transformation matrix." << std::endl;
+                        std::cout << "tranformation_matrix = " << tranformation_matrix << std::endl;
+#endif
+                     }
                 }
             }
             
@@ -511,17 +691,51 @@ private:
         // Now move the particles updated with transformation matrices
         std::vector<std::unordered_set<uint32_t>> newly_moved_ptc_indices;
         op_mt_.moveParticlesInSetsByTransformations(ptc_indices_to_move, t_matrices_to_move, newly_moved_ptc_indices);
+
+
         // Update the hash map
         for(int i=0; i<newly_moved_ptc_indices.size(); ++i){
             object_set_.obj_ptc_hash_map.updatePtcIndicesOfObj(track_ids_to_move[i], newly_moved_ptc_indices[i]);
         }
 
-
         // Remove the objects that are not observed for a long time
         for(auto &object_id : objects_to_remove)
         {
             object_set_.removeObjectByTrackID(object_id);
+
+#if SETTING == 3
+            last_kpts_3d_map_.erase(object_id); // Remove the stored 3D keypoints of the object
+            last_kpts_3d_time_stamp_map_.erase(object_id); // Remove the stored time stamp of the object
+#endif
         }
+
+        // Test code begin
+        /*** Don't know why there should be floating objects (with no particles) but removing them works. ***/
+        // Check if there are floating particles by checking if obj_ptc_hash_map.indices_map have track_id that are not in object_tracking_hash_map
+        std::vector<int> floating_objects;
+        for(auto it = object_set_.obj_ptc_hash_map.indices_map.begin(); it != object_set_.obj_ptc_hash_map.indices_map.end(); ++it)
+        {
+            if(object_set_.object_tracking_hash_map.find(it->first) == object_set_.object_tracking_hash_map.end())
+            {
+                // std::cout << "!!!!!!!!! Floating particles of object " << it->first << " removed." << std::endl;
+                // std::cout <<"number of particles = " << it->second.size() << std::endl;
+                floating_objects.push_back(it->first);
+            }
+        }
+
+        // Remove the floating objects
+        for(auto &object_id : floating_objects)
+        {
+            object_set_.removeObjectByTrackID(object_id);
+#if SETTING == 3
+            last_kpts_3d_map_.erase(object_id); // Remove the stored 3D keypoints of the object
+            last_kpts_3d_time_stamp_map_.erase(object_id); // Remove the stored time stamp of the object
+            key_kpts_3d_map_.erase(object_id); // Remove the stored key 3D keypoints of the object
+            key_kpts_3d_time_stamp_map_.erase(object_id); // Remove the stored time stamp of the key 3D keypoints of the object
+#endif
+        }
+        // Test code end
+
 
         std::chrono::high_resolution_clock::time_point t2 = std::chrono::high_resolution_clock::now();
 
@@ -534,17 +748,20 @@ private:
 
         op_mt_.updateVisibleParitlcesWithBFS(extrinsic, depth_value_mat); // The time particle is ignored
 
+        std::chrono::high_resolution_clock::time_point t2_1 = std::chrono::high_resolution_clock::now();
+
         // Visualize the pyramid image
+#if VERBOSE_MODE == 1
         showSimplePyramidImage();
+#endif
 
         // Update the weight of particles in the FOV
-        std::cout << "Update weight of particles in the FOV..............." << std::endl;
         if(getFlagUsePignisticProbability()){
-            updateParticlesWithFreePoint(labeled_point_cloud);
+            // updateParticlesWithFreePoint(labeled_point_cloud); // Disable the update with free points for now because Pigistic probability is not used.
+            updateParticles(labeled_point_cloud); 
         }else{
             updateParticles(labeled_point_cloud); 
         }
-        std::cout << "Update weight done." << std::endl;
         
         std::chrono::high_resolution_clock::time_point t3 = std::chrono::high_resolution_clock::now();
 
@@ -581,11 +798,12 @@ private:
                 }
             }
         }
-
-        std::cout << "*** added_particle_num = " << added_particle_num << std::endl;
+        
 
         std::chrono::high_resolution_clock::time_point t4 = std::chrono::high_resolution_clock::now();
 
+
+#if BOOST_MODE == 0
         /**************** Additional particle birth to known objects in tracking ******************/
         if(getFlagUseTemplateMatching()){
              // Iterate all the points in tracked_objects_points
@@ -599,7 +817,7 @@ private:
                 label_id = track_to_label_id_map[track_id];
 
                 /// TODO: Change the matching condition. Only consider cars for now.
-                if(label_id != label_id_map_default["Car"] || it->second.size() > 8000 || it->second.size() < 1500){ 
+                if(label_id != g_label_id_map_default["Car"] || it->second.size() > 8000 || it->second.size() < 1500){ 
                     continue;
                 }
 
@@ -643,8 +861,11 @@ private:
                 
                 std::chrono::high_resolution_clock::time_point t5_2 = std::chrono::high_resolution_clock::now();
                 std::chrono::duration<double> time_used_matching = std::chrono::duration_cast<std::chrono::duration<double>>(t5_2 - t5_1);
+
+#if VERBOSE_MODE == 1
                 std::cout << "Time used for matching: " << time_used_matching.count() << " s" << std::endl;
                 std::cout << "match_score = " << match_score << std::endl;
+#endif
 
                 // Check if the match is good enough. If good, add new particles to the ring buffer.
                 if(match_score < match_score_threshold_){
@@ -662,30 +883,22 @@ private:
                         pt_labeled.position << pt.x + gaussian_random_.queryNormalRandomZeroMean(noise_matched), pt.y + gaussian_random_.queryNormalRandomZeroMean(noise_matched), pt.z + gaussian_random_.queryNormalRandomZeroMean(noise_matched);
                         pt_labeled.label_id = label_id;
                         pt_labeled.track_id = track_id;
-                        pt_labeled.color_h = 0;
 
                         // Add a new particle to the ring buffer and obj_ptc_hash_map. No noise. Resample if necessary.
                         addGuessedParticle(pt_labeled);
                     }
-
-                    // LabeledPoint pt_labeled;
-                    // pt_labeled.position << pt.x, pt.y, pt.z;
-                    // pt_labeled.label_id = label_id;
-                    // pt_labeled.track_id = track_id;
-                    // pt_labeled.color_h = 0;
-
-                    // Add a new particle to the ring buffer and obj_ptc_hash_map. No noise. Resample if necessary.
-                    // addGuessedParticle(pt_labeled);
                 }
             }
         }
+
+#endif
 
         std::chrono::high_resolution_clock::time_point t5 = std::chrono::high_resolution_clock::now();
 
         /**************** Get occupancy result ******************/
         // Camera intrinsic matrix and extrinsic matrix
         Eigen::Matrix3f intrinsic_matrix;
-        intrinsic_matrix << g_camera_fx, 0.f, g_camera_cx,
+        intrinsic_matrix << g_camera_fx, 0, g_camera_cx,
                             0.f, g_camera_fy, g_camera_cy,
                             0.f, 0.f, 1.f;
         Eigen::Matrix4f extrinsic_matrix = Eigen::Matrix4f::Identity();
@@ -696,24 +909,26 @@ private:
         // Now get the occupancy result
         getOccupancyResult(occupied_point_cloud, freespace_point_cloud, extrinsic_matrix, intrinsic_matrix, if_get_freespace);
 
-
+#if VERBOSE_MODE == 1
         std::chrono::high_resolution_clock::time_point t6 = std::chrono::high_resolution_clock::now();
-
 
         // Print the time used for each step
         std::chrono::duration<double> time_used_prediction = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1);
+        std::chrono::duration<double> time_used_projecttion = std::chrono::duration_cast<std::chrono::duration<double>>(t2_1 - t2);
         std::chrono::duration<double> time_used_update_weight = std::chrono::duration_cast<std::chrono::duration<double>>(t3 - t2);
         std::chrono::duration<double> time_used_particle_birth = std::chrono::duration_cast<std::chrono::duration<double>>(t4 - t3);
         std::chrono::duration<double> time_used_additional_particle_birth = std::chrono::duration_cast<std::chrono::duration<double>>(t5 - t4);
         std::chrono::duration<double> time_used_occupancy_result = std::chrono::duration_cast<std::chrono::duration<double>>(t6 - t5);
 
         std::cout << "Time used for prediction: " << time_used_prediction.count() << " s" << std::endl;
+        std::cout << "Time used for projecttion: " << time_used_projecttion.count() << " s" << std::endl;
         std::cout << "Time used for update weight: " << time_used_update_weight.count() << " s" << std::endl;
         std::cout << "Time used for particle birth: " << time_used_particle_birth.count() << " s" << std::endl;
         std::cout << "Time used for additional particle birth: " << time_used_additional_particle_birth.count() << " s" << std::endl;
         std::cout << "Time used for occupancy result: " << time_used_occupancy_result.count() << " s" << std::endl;
 
         static double time_used_total_prediction = 0.0;
+        static double time_used_total_projection = 0.0;
         static double time_used_total_update_weight = 0.0;
         static double time_used_total_particle_birth = 0.0;
         static double time_used_total_additional_particle_birth = 0.0;
@@ -721,6 +936,7 @@ private:
         static int time_used_total_count = 0;
 
         time_used_total_prediction += time_used_prediction.count();
+        time_used_total_projection += time_used_projecttion.count();
         time_used_total_update_weight += time_used_update_weight.count();
         time_used_total_particle_birth += time_used_particle_birth.count();
         time_used_total_additional_particle_birth += time_used_additional_particle_birth.count();
@@ -728,520 +944,14 @@ private:
         time_used_total_count += 1;
 
         std::cout << "Average time used for prediction: " << time_used_total_prediction / time_used_total_count << " s" << std::endl;
+        std::cout << "Average time used for projecttion: " << time_used_total_projection / time_used_total_count << " s" << std::endl;
         std::cout << "Average time used for update weight: " << time_used_total_update_weight / time_used_total_count << " s" << std::endl;
         std::cout << "Average time used for particle birth: " << time_used_total_particle_birth / time_used_total_count << " s" << std::endl;
         std::cout << "Average time used for additional particle birth: " << time_used_total_additional_particle_birth / time_used_total_count << " s" << std::endl;
         std::cout << "Average time used for occupancy result: " << time_used_total_occupancy_result / time_used_total_count << " s" << std::endl;
-
-
-        /**************** Save the Object Points for Template ******************/
-        // std::cout << "Object number = " << object_set_.object_tracking_hash_map.size() << std::endl;
-        // // Iterate all the objects in object_tracking_hash_map
-        // for(auto it = object_set_.object_tracking_hash_map.begin(); it != object_set_.object_tracking_hash_map.end(); ++it)
-        // {
-        //     // Consider newly updated objects only
-        //     if(it->second.observation_time_step != global_time_stamp){continue;}
-        //     int object_id = it->first;
-
-        //     // Check if the object exists in obj_ptc_hash_map
-        //     if(!object_set_.obj_ptc_hash_map.checkIfObjectExists(object_id)){
-        //         std::cout << "Object " << object_id << " does not exist in obj_ptc_hash_map." << std::endl;
-        //         continue;
-        //     }
-
-        //     std::cout << "Object " << object_id << " has " << object_set_.obj_ptc_hash_map.indices_map.at(object_id).size() << " particles." << std::endl;
-            
-        //     // Get the particles of object_id in obj_ptc_hash_map and save it to pcl point cloud
-        //     pcl::PointCloud<pcl::PointXYZ>::Ptr object_point_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-        //     for(std::unordered_set<uint32_t>::iterator it2 = object_set_.obj_ptc_hash_map.indices_map.at(object_id).begin(); it2 != object_set_.obj_ptc_hash_map.indices_map.at(object_id).end(); ++it2)
-        //     {
-        //         Eigen::Vector3f ptc_pos;
-        //         float occ_weight, free_weight;
-        //         op_mt_.getParticlePosWeightByIndex(*it2, ptc_pos, occ_weight, free_weight);
-
-        //         pcl::PointXYZ pt;
-        //         pt.x = ptc_pos.x();
-        //         pt.y = ptc_pos.y();
-        //         pt.z = ptc_pos.z();
-
-        //         object_point_cloud->points.push_back(pt);
-        //     }
-
-        //     // Save the point cloud if the point number is larger than 100
-        //     if(object_point_cloud->size() > 100)
-        //     {   
-        //         // Use global_time_stamp + object_id as the file name
-        //         object_point_cloud->width = object_point_cloud->size();
-        //         object_point_cloud->height = 1;
-        //         std::string file_name = std::to_string(global_time_stamp) + "_" + std::to_string(object_id) + ".pcd";
-        //         std::string full_path = "/home/clarence/ros_ws/semantic_dsp_ws/src/Semantic_DSP_Map/data/VirtualKitti2/pcd_constructed/" + file_name;
-        //         pcl::io::savePCDFileASCII(full_path, *object_point_cloud);
-        //     }
-            
-        // }
-        
-    }
-
-    /// @brief Add a Guessed Particle from the template matching result
-    /// @param pt 
-    inline void addGuessedParticle(const LabeledPoint &pt)
-    {
-        // Add a new particle to the ring buffer. No noise.
-        uint32_t voxel_idx, ptc_idx;
-        op_mt_.addGuessedParticles(pt.position, pt.label_id, pt.track_id, pt.color_h, voxel_idx, ptc_idx);
-        if(ptc_idx != INVALID_PARTICLE_INDEX)
-        {   
-            // Add the new particle to the object. 
-            int track_id = static_cast<int>(pt.track_id);
-            int label_id = static_cast<int>(pt.label_id);
-
-            if(label_id > c_movable_object_label_id_start){
-                object_set_.obj_ptc_hash_map.addParticleToObj(track_id, ptc_idx);
-            }
-        }
-    }
-
-    /// @brief Add a new born particle to the ring buffer and resample if necessary
-    /// @param pt 
-    /// @param added_particle_num 
-    /// @param resampled_voxel_indices 
-    inline void addNewbornParticleAndResample(const LabeledPoint &pt, uint32_t &added_particle_num, std::unordered_set<uint32_t> &resampled_voxel_indices)
-    {
-        // Add a new particle to the ring buffer. No noise.
-        uint32_t voxel_idx, ptc_idx;
-        op_mt_.addNewParticleWithSemantics(pt.position, pt.label_id, pt.track_id, pt.color_h, voxel_idx, ptc_idx);
-        if(ptc_idx != INVALID_PARTICLE_INDEX)
-        {   
-            // Add the new particle to the object. 
-            int track_id = static_cast<int>(pt.track_id);
-            int label_id = static_cast<int>(pt.label_id);
-            added_particle_num += 1;
-
-            if(label_id >= c_movable_object_label_id_start){
-                object_set_.obj_ptc_hash_map.addParticleToObj(track_id, ptc_idx);
-            }
-        }
-
-        // Resample if necessary
-        if(voxel_idx != INVALID_PARTICLE_INDEX && resampled_voxel_indices.count(voxel_idx) == 0){
-            if(resampleParticlesInVoxel(voxel_idx, object_set_.obj_ptc_hash_map)){
-                resampled_voxel_indices.insert(voxel_idx);
-            }
-        }
-    }
-
-    /// @brief Add new particles to the ring buffer with the consideration of noise and resample if necessary
-    /// @param pt 
-    /// @param added_particle_num 
-    /// @param resampled_voxel_indices 
-    inline void addNewbornParticleWithNoiseAndResample(const LabeledPoint &pt, uint32_t &added_particle_num, std::unordered_set<uint32_t> &resampled_voxel_indices)
-    {
-        // Add new particles to the ring buffer with noise
-        for(int n=0; n<nb_ptc_num_per_point_; ++n)
-        {
-            Eigen::Vector3f noise;
-            float sigma_this_pixel = pt.sigma;
-            noise << gaussian_random_.queryNormalRandomZeroMean(sigma_this_pixel), gaussian_random_.queryNormalRandomZeroMean(sigma_this_pixel), gaussian_random_.queryNormalRandomZeroMean(sigma_this_pixel);
-            
-            uint32_t voxel_idx, ptc_idx;
-            op_mt_.addNewParticleWithSemantics(pt.position + noise, pt.label_id, pt.track_id, pt.color_h, voxel_idx, ptc_idx);
-
-            if(ptc_idx != INVALID_PARTICLE_INDEX)
-            {   
-                // Add the new particle to the object. 
-                int track_id = static_cast<int>(pt.track_id);
-                int label_id = static_cast<int>(pt.label_id);
-                added_particle_num += 1;
-
-                // Only add the particle to the object if it is a movable object
-                if(label_id >= c_movable_object_label_id_start){
-                    object_set_.obj_ptc_hash_map.addParticleToObj(track_id, ptc_idx);
-                }
-            }
-
-            // Resampling if necessary
-            if(voxel_idx != INVALID_PARTICLE_INDEX && resampled_voxel_indices.count(voxel_idx) == 0){
-                if(resampleParticlesInVoxel(voxel_idx, object_set_.obj_ptc_hash_map)){
-                    resampled_voxel_indices.insert(voxel_idx);
-                }
-            }
-        }
-    }
-
-
-    /// @brief Get the occupancy result. The occupied voxel will be colored and those which are in the FOV will be colored with higher brightness.
-    /// @param occupied_point_cloud 
-    /// @param freespace_point_cloud
-    /// @param extrinsic_matrix 
-    /// @param intrinsic_matrix 
-    /// @param get_freespace if true, the freespace point cloud will be generated
-    inline void getOccupancyResult(pcl::PointCloud<pcl::PointXYZRGB>::Ptr &occupied_point_cloud, pcl::PointCloud<pcl::PointXYZRGB>::Ptr &freespace_point_cloud, const Eigen::Matrix4f &extrinsic_matrix, const Eigen::Matrix3f &intrinsic_matrix, bool get_freespace = false)
-    {
-        int invalid_voxel_num = 0;
-        for(uint32_t i=0; i<C_VOXEL_NUM_TOTAL; ++i){
-            uint16_t track_id;
-            uint8_t label_id;
-            /// TODO:improve the efficiency of this function: determineIfVoxelOccupied
-            int occ_result_this_voxel;
-            if(getFlagUsePignisticProbability()){
-                occ_result_this_voxel = op_mt_.determineIfVoxelOccupiedConsiderFreePoint(i, label_id, track_id, occupancy_threshold_);
-            }else{
-                occ_result_this_voxel = op_mt_.determineIfVoxelOccupied(i, label_id, track_id, occupancy_threshold_);
-            }
-
-            // int occupied_max_flag = 10;
-            // if(if_out_evaluation_format_){ //Keep only the occupied voxel
-            //     occupied_max_flag = 1;
-            // }
-
-            // // Count the number of invalid voxels
-            // if(occ_result_this_voxel < 0){
-            //     invalid_voxel_num ++;
-            //     continue;
-            // }
-
-            if(occ_result_this_voxel > 0){  //&& occ_result_this_voxel <= occupied_max_flag    
-                Eigen::Vector3f voxel_pos;
-                op_mt_.getVoxelGlobalPosition(i, voxel_pos);
-
-                pcl::PointXYZRGB pt;
-                pt.x = voxel_pos.x();
-                pt.y = voxel_pos.y();
-                pt.z = voxel_pos.z();
-
-                if(occ_result_this_voxel == 1){ // Occupied
-                    // Using the color map
-                    static int background_id = label_id_map_default["Background"];
-                    static int tree_id = label_id_map_default["Tree"];
-                    if(label_id == background_id){  // Ground et.al.
-                        // Color by y axis. Map -1 to 5 to color_map_jet_256_
-                        float y = voxel_pos.y();
-                        int color_index = std::min(std::max(static_cast<int>((y+1.f)*51.2f), 0), 255);
-                        pt.r = color_map_jet_256_[color_index](0);
-                        pt.g = color_map_jet_256_[color_index](1);
-                        pt.b = color_map_jet_256_[color_index](2);
-
-                        if(if_out_evaluation_format_){
-                            pt.r = label_id;
-                        }
-
-                    }else if(label_id == tree_id){
-                        //Dark green
-                        pt.r = 0;
-                        if(if_out_evaluation_format_){
-                            pt.r = label_id;
-                        }
-                        pt.g = 200;
-                        pt.b = 0;
-                    }else{  // Cars et.al.
-                        if(if_out_evaluation_format_)
-                        {
-                            pt.r = label_id;
-                            pt.g = track_id >> 8;
-                            pt.b = track_id & 0xFF;
-                        }else{
-                            pt.r = 160;
-                            pt.g = color_map_int_256_[track_id];
-                            pt.b = color_map_int_256_[label_id];
-                        }
-                    }
-                }else{ // Guessed to be occupied
-                    // Use white for guessed result
-                    pt.r = 255;
-                    pt.g = 255;
-                    pt.b = 255;
-                    // std::cout << "Matched point ";
-                }
-
-                if(!if_out_evaluation_format_){
-                    // Turn to HSV space
-                    cv::Mat rgb(1, 1, CV_8UC3, cv::Scalar(pt.r, pt.g, pt.b));
-                    cv::Mat hsv;
-                    cv::cvtColor(rgb, hsv, cv::COLOR_RGB2HSV);
-                    
-                    // Check if the point is in the FOV
-                    Eigen::Vector3f pt_vector(pt.x, pt.y, pt.z);
-                    if(!op_mt_.checkIfPointInFrustum(pt_vector, extrinsic_matrix, intrinsic_matrix, g_image_width, g_image_height))
-                    {
-                        hsv.at<cv::Vec3b>(0,0)[2] *= 0.7f;
-                    }
-                    // Turn back to RGB space
-                    cv::Mat rgb2;
-                    cv::cvtColor(hsv, rgb2, cv::COLOR_HSV2RGB);
-
-                    pt.r = rgb2.at<cv::Vec3b>(0,0)[0];
-                    pt.g = rgb2.at<cv::Vec3b>(0,0)[1];
-                    pt.b = rgb2.at<cv::Vec3b>(0,0)[2];
-                }
-
-                occupied_point_cloud->points.push_back(pt);
-            }else if(get_freespace && occ_result_this_voxel == 0){
-                Eigen::Vector3f voxel_pos;
-                op_mt_.getVoxelGlobalPosition(i, voxel_pos);
-
-                pcl::PointXYZRGB pt;
-                pt.x = voxel_pos.x();
-                pt.y = voxel_pos.y();
-                pt.z = voxel_pos.z();
-
-                pt.r = 0;
-                pt.g = 255;
-                pt.b = 0;
-
-                freespace_point_cloud->points.push_back(pt);
-            }
-        }
-
-        // std::cout << "invalid_voxel_num = " << invalid_voxel_num << std::endl;
-    }
-
-    /// @brief Get the 3d bounding box of the object composed of points or particles
-    /// @param points Input points
-    /// @param bbox3d Result
-    inline void getBoundingBox(const std::vector<Eigen::Vector3d> &points, BBox3D &bbox3d)
-    {
-        Eigen::Vector3d min_pt, max_pt;
-        min_pt << 1000.f, 1000.f, 1000.f;
-        max_pt << -1000.f, -1000.f, -1000.f;
-
-        for(auto &pt : points)
-        {
-            if(pt.x() < min_pt.x()){min_pt.x() = pt.x();}
-            if(pt.y() < min_pt.y()){min_pt.y() = pt.y();}
-            if(pt.z() < min_pt.z()){min_pt.z() = pt.z();}
-
-            if(pt.x() > max_pt.x()){max_pt.x() = pt.x();}
-            if(pt.y() > max_pt.y()){max_pt.y() = pt.y();}
-            if(pt.z() > max_pt.z()){max_pt.z() = pt.z();}
-        }
-
-        bbox3d.center.x() = (min_pt.x() + max_pt.x()) / 2.f;
-        bbox3d.center.y() = (min_pt.y() + max_pt.y()) / 2.f;
-        bbox3d.center.z() = (min_pt.z() + max_pt.z()) / 2.f;
-
-        bbox3d.size.x() = max_pt.x() - min_pt.x();
-        bbox3d.size.y() = max_pt.y() - min_pt.y();
-        bbox3d.size.z() = max_pt.z() - min_pt.z();
-    }
-
-    /// @brief Update the particles considering the free point. To be used for Pignistic Probability
-    void updateParticlesWithFreePoint(const std::vector<std::vector<LabeledPoint>> &labeled_point_cloud)
-    {
-        // Calculate the neighbor size
-        /// TODO: use adaptive neighbor size
-        int neighbor_width_half_array[g_image_height][g_image_width];
-        int neighbor_height_half_array[g_image_height][g_image_width];
-
-        for(int i=0; i<g_image_height; ++i)
-        {
-            for(int j=0; j<g_image_width; ++j)
-            { 
-                neighbor_width_half_array[i][j] = 5;
-                neighbor_height_half_array[i][j] = 5;
-            }
-        }
-
-        // Calculate CK + kappa first
-        float ck_kappa_array[g_image_height][g_image_width];
-        float ck_kappa_free_array[g_image_height][g_image_width];
-        for(int i=0; i<g_image_height; ++i)
-        {
-            for(int j=0; j<g_image_width; ++j)
-            {   
-                // Check if the point is valid. Mask out the invalid points
-                if(!labeled_point_cloud[i][j].is_valid){ 
-                    continue;
-                }
-
-                int neighbor_width_half = neighbor_width_half_array[i][j]; 
-                int neighbor_height_half = neighbor_height_half_array[i][j];
-                float sigma_this_pixel = labeled_point_cloud[i][j].sigma;
-                float sigma_this_pixel_free = sigma_this_pixel * 0.1f;
-
-                // Calculate the ck + kappa value of the pixel with neighbors
-                float ck_this_pixel = 0.f;
-                float ck_this_pixel_free = 0.f;
-
-                for(int m=-neighbor_height_half; m<=neighbor_height_half; ++m)
-                {
-                    for(int n=-neighbor_width_half; n<=neighbor_width_half; ++n)
-                    {
-                        int neighbor_i = i + m;
-                        int neighbor_j = j + n;
-
-                        if(neighbor_i < 0 || neighbor_i >= g_image_height || neighbor_j < 0 || neighbor_j >= g_image_width){
-                            continue;
-                        }
-
-                        // Iterate all particles in the pixel
-                        int particle_num_this_pixel = particle_to_pixel_num_array[neighbor_i][neighbor_j];
-                        int max_particle_num_in_array = std::min(particle_num_this_pixel, C_ESTIMATED_PARTICLE_NUM_PER_PYRAMID);
-                        for(int l=0; l<max_particle_num_in_array; ++l)
-                        {
-                            auto *particle = &PARTICLE_ARRAY[particle_to_pixel_index_array[neighbor_i][neighbor_j][l]];
-
-                            // Skip the particles that don't belong to the same object
-                            if(particle->track_id != labeled_point_cloud[i][j].track_id){
-                                continue;
-                            }
-
-                            float gk = gaussian_random_.queryNormalPDF(particle->pos.x(), labeled_point_cloud[i][j].position.x(), sigma_this_pixel)
-                                       * gaussian_random_.queryNormalPDF(particle->pos.y(), labeled_point_cloud[i][j].position.y(), sigma_this_pixel)
-                                       * gaussian_random_.queryNormalPDF(particle->pos.z(), labeled_point_cloud[i][j].position.z(), sigma_this_pixel);
-
-                            float gk_free = gaussian_random_.queryNormalPDF(particle->pos.x(), labeled_point_cloud[i][j].free_position.x(), sigma_this_pixel_free)
-                                            * gaussian_random_.queryNormalPDF(particle->pos.y(), labeled_point_cloud[i][j].free_position.y(), sigma_this_pixel_free)
-                                            * gaussian_random_.queryNormalPDF(particle->pos.z(), labeled_point_cloud[i][j].free_position.z(), sigma_this_pixel_free);
-
-                            ck_this_pixel += particle->occ_weight * gk;
-                            ck_this_pixel_free += particle->free_weight * gk_free;
-                        }
-
-                        // Consider the overflowed particles stored in the map
-                        int overflowed_particle_num = particle_num_this_pixel - C_ESTIMATED_PARTICLE_NUM_PER_PYRAMID;
-                        if(overflowed_particle_num > 0){
-                            int id = neighbor_i*g_image_width + neighbor_j;
-                            for(int l=0; l<overflowed_particle_num; ++l)
-                            {
-                                auto *particle = &PARTICLE_ARRAY[particle_to_pixel_index_map[id][l]];
-                             
-                                // Skip the particles that don't belong to the same object
-                                if(particle->track_id != labeled_point_cloud[i][j].track_id){
-                                    continue;
-                                }
-
-                                float gk = gaussian_random_.queryNormalPDF(particle->pos.x(), labeled_point_cloud[i][j].position.x(), sigma_this_pixel)
-                                       * gaussian_random_.queryNormalPDF(particle->pos.y(), labeled_point_cloud[i][j].position.y(), sigma_this_pixel)
-                                       * gaussian_random_.queryNormalPDF(particle->pos.z(), labeled_point_cloud[i][j].position.z(), sigma_this_pixel);
-
-                                float gk_free = gaussian_random_.queryNormalPDF(particle->pos.x(), labeled_point_cloud[i][j].free_position.x(), sigma_this_pixel_free)
-                                                * gaussian_random_.queryNormalPDF(particle->pos.y(), labeled_point_cloud[i][j].free_position.y(), sigma_this_pixel_free)
-                                                * gaussian_random_.queryNormalPDF(particle->pos.z(), labeled_point_cloud[i][j].free_position.z(), sigma_this_pixel_free);
-
-                                ck_this_pixel += particle->occ_weight * gk;
-                                ck_this_pixel_free += particle->free_weight * gk_free;
-                            }
-                        }
-                    }
-                }
-
-                ck_kappa_array[i][j] = ck_this_pixel * detection_probability_ + noise_number_;
-                ck_kappa_free_array[i][j] = ck_this_pixel_free * detection_probability_ + noise_number_;
-            }
-        }
-
-        // Update the weight of particles in the FOV
-        for(int i=0; i<g_image_height; ++i)
-        {
-            for(int j=0; j<g_image_width; ++j)
-            { 
-                int neighbor_width_half = neighbor_width_half_array[i][j]; 
-                int neighbor_height_half = neighbor_height_half_array[i][j];
-                float sigma_this_pixel = labeled_point_cloud[i][j].sigma;
-                float sigma_this_pixel_free = sigma_this_pixel * 0.1f;
-
-                // Update particles in each pixel
-                int particle_num_this_pixel = particle_to_pixel_num_array[i][j];
-                int max_particle_num_in_array = std::min(particle_num_this_pixel, C_ESTIMATED_PARTICLE_NUM_PER_PYRAMID);
-                for(int l=0; l<max_particle_num_in_array; ++l)
-                {
-                    auto *particle = &PARTICLE_ARRAY[particle_to_pixel_index_array[i][j][l]];
-                    float acc_this_particle = 0.f;
-                    float acc_free_this_particle = 0.f;
-                    for(int m=-neighbor_height_half; m<=neighbor_height_half; ++m)
-                    {
-                        for(int n=-neighbor_width_half; n<=neighbor_width_half; ++n)
-                        {
-                            int neighbor_i = i + m;
-                            int neighbor_j = j + n;
-
-                            if(neighbor_i < 0 || neighbor_i >= g_image_height || neighbor_j < 0 || neighbor_j >= g_image_width){
-                                continue;
-                            }
-
-                            // Check if the point is valid
-                            if(!labeled_point_cloud[neighbor_i][neighbor_j].is_valid){ 
-                                continue;
-                            }
-                            // Skip the point that don't belong to the same object
-                            if(labeled_point_cloud[neighbor_i][neighbor_j].track_id != particle->track_id){
-                                continue;
-                            }
-
-                            float gk = gaussian_random_.queryNormalPDF(particle->pos.x(), labeled_point_cloud[neighbor_i][neighbor_j].position.x(), sigma_this_pixel)
-                                        * gaussian_random_.queryNormalPDF(particle->pos.y(), labeled_point_cloud[neighbor_i][neighbor_j].position.y(), sigma_this_pixel)
-                                        * gaussian_random_.queryNormalPDF(particle->pos.z(), labeled_point_cloud[neighbor_i][neighbor_j].position.z(), sigma_this_pixel);
-                            
-                            float gk_free = gaussian_random_.queryNormalPDF(particle->pos.x(), labeled_point_cloud[neighbor_i][neighbor_j].free_position.x(), sigma_this_pixel_free)
-                                            * gaussian_random_.queryNormalPDF(particle->pos.y(), labeled_point_cloud[neighbor_i][neighbor_j].free_position.y(), sigma_this_pixel_free)
-                                            * gaussian_random_.queryNormalPDF(particle->pos.z(), labeled_point_cloud[neighbor_i][neighbor_j].free_position.z(), sigma_this_pixel_free);
-            
-
-                            acc_this_particle += gk / ck_kappa_array[neighbor_i][neighbor_j];
-                            acc_free_this_particle += gk_free / ck_kappa_free_array[neighbor_i][neighbor_j];
-                        }
-                    }
-
-                    static const float c_one_minus_detection_probability = 1.f - detection_probability_;
-
-                    particle->occ_weight *= (acc_this_particle * detection_probability_ + c_one_minus_detection_probability);
-                    particle->free_weight *= (acc_free_this_particle * detection_probability_ + c_one_minus_detection_probability);
-                    particle->status = Particle_Status::UPDATED;
-                    particle->time_stamp = global_time_stamp;
-                }
-
-                // Consider the overflowed particles stored in the map
-                int overflowed_particle_num = particle_num_this_pixel - C_ESTIMATED_PARTICLE_NUM_PER_PYRAMID;
-                if(overflowed_particle_num > 0)
-                {
-                    int id = i*g_image_width + j;
-                    for(int l=0; l<overflowed_particle_num; ++l)
-                    {
-                        auto *particle = &PARTICLE_ARRAY[particle_to_pixel_index_map[id][l]];
-                        float acc_this_particle = 0.f;
-                        float acc_free_this_particle = 0.f;
-
-                        for(int m=-neighbor_height_half; m<=neighbor_height_half; ++m)
-                        {
-                            for(int n=-neighbor_width_half; n<=neighbor_width_half; ++n)
-                            {
-                                int neighbor_i = i + m;
-                                int neighbor_j = j + n;
-
-                                if(neighbor_i < 0 || neighbor_i >= g_image_height || neighbor_j < 0 || neighbor_j >= g_image_width){
-                                    continue;
-                                }
-
-                                if(!labeled_point_cloud[neighbor_i][neighbor_j].is_valid){ // Check if the point is valid
-                                    continue;
-                                }
-
-                                float gk = gaussian_random_.queryNormalPDF(particle->pos.x(), labeled_point_cloud[neighbor_i][neighbor_j].position.x(), sigma_this_pixel)
-                                            * gaussian_random_.queryNormalPDF(particle->pos.y(), labeled_point_cloud[neighbor_i][neighbor_j].position.y(), sigma_this_pixel)
-                                            * gaussian_random_.queryNormalPDF(particle->pos.z(), labeled_point_cloud[neighbor_i][neighbor_j].position.z(), sigma_this_pixel);
-                                
-                                float gk_free = gaussian_random_.queryNormalPDF(particle->pos.x(), labeled_point_cloud[neighbor_i][neighbor_j].free_position.x(), sigma_this_pixel_free)
-                                            * gaussian_random_.queryNormalPDF(particle->pos.y(), labeled_point_cloud[neighbor_i][neighbor_j].free_position.y(), sigma_this_pixel_free)
-                                            * gaussian_random_.queryNormalPDF(particle->pos.z(), labeled_point_cloud[neighbor_i][neighbor_j].free_position.z(), sigma_this_pixel_free);
-            
-                                acc_this_particle += gk / ck_kappa_array[neighbor_i][neighbor_j];
-                                acc_free_this_particle += gk_free / ck_kappa_free_array[neighbor_i][neighbor_j];
-                            }
-                        }
-
-                        static const float c_one_minus_detection_probability = 1.f - detection_probability_;
-
-                        particle->occ_weight *= (acc_this_particle * detection_probability_ + c_one_minus_detection_probability);
-                        particle->free_weight *= (acc_free_this_particle * detection_probability_ + c_one_minus_detection_probability);
-
-                        particle->status = Particle_Status::UPDATED;
-                        particle->time_stamp = global_time_stamp;
-                    }
-                }
-
-            }
-        }
-
+        std::cout << "Average time used for all steps: " << (time_used_total_prediction + time_used_total_update_weight + time_used_total_particle_birth + time_used_total_additional_particle_birth + time_used_total_occupancy_result) / time_used_total_count << " s" << std::endl;
+#endif
+    
     }
 
 
@@ -1251,17 +961,13 @@ private:
     {
         // Calculate the neighbor size
         /// TODO: use adaptive neighbor size
-        int neighbor_width_half_array[g_image_height][g_image_width];
-        int neighbor_height_half_array[g_image_height][g_image_width];
-
-        for(int i=0; i<g_image_height; ++i)
-        {
-            for(int j=0; j<g_image_width; ++j)
-            { 
-                neighbor_width_half_array[i][j] = 3;  //5
-                neighbor_height_half_array[i][j] = 3;
-            }
-        }
+#if BOOST_MODE == 0
+        static std::vector<std::vector<int>> neighbor_width_half_array(g_image_height, std::vector<int>(g_image_width, 5));
+        static std::vector<std::vector<int>> neighbor_height_half_array(g_image_height, std::vector<int>(g_image_width, 5));
+#else
+        static std::vector<std::vector<int>> neighbor_width_half_array(g_image_height, std::vector<int>(g_image_width, 3));
+        static std::vector<std::vector<int>> neighbor_height_half_array(g_image_height, std::vector<int>(g_image_width, 3));
+#endif
 
         // Calculate CK + kappa first.
         float ck_kappa_array[g_image_height][g_image_width];
@@ -1293,65 +999,34 @@ private:
 
                         // Iterate all particles in the pixel
                         int particle_num_this_pixel = particle_to_pixel_num_array[neighbor_i][neighbor_j];
-                        int max_particle_num_in_array = std::min(particle_num_this_pixel, C_ESTIMATED_PARTICLE_NUM_PER_PYRAMID);
-                        for(int l=0; l<max_particle_num_in_array; ++l)
-                        {
-                            auto *particle = &PARTICLE_ARRAY[particle_to_pixel_index_array[neighbor_i][neighbor_j][l]];
 
-                            if(getFlagUseIndependentFilter()){ //|| particle->track_id > c_max_movable_object_instance_id
-                                // Skip the particles that don't belong to the same object
-                                if(particle->track_id != labeled_point_cloud[i][j].track_id){
-                                    continue;
-                                }
-                            }
-                            
-                            float gk = gaussian_random_.queryNormalPDF(particle->pos.x(), labeled_point_cloud[i][j].position.x(), sigma_this_pixel)
-                                       * gaussian_random_.queryNormalPDF(particle->pos.y(), labeled_point_cloud[i][j].position.y(), sigma_this_pixel)
-                                       * gaussian_random_.queryNormalPDF(particle->pos.z(), labeled_point_cloud[i][j].position.z(), sigma_this_pixel);
-
-                            if(!getFlagUseIndependentFilter())
-                            {
-                                /// TODO: Use a better ID transition probability
-                                gk *= getForgettingFactor(particle->forget_count, forgetting_rate_);
-                                if(particle->track_id != labeled_point_cloud[i][j].track_id)
-                                {
-                                    gk *= 0.5f; // ID transition probability
-                                }
-                            }
-
-                            ck_this_pixel += particle->occ_weight * gk;
-                        }
-
-                        // Consider the overflowed particles stored in the map
-                        int overflowed_particle_num = particle_num_this_pixel - C_ESTIMATED_PARTICLE_NUM_PER_PYRAMID;
-                        if(overflowed_particle_num > 0){
+                        if(particle_num_this_pixel > 0){
                             int id = neighbor_i*g_image_width + neighbor_j;
-                            for(int l=0; l<overflowed_particle_num; ++l)
+                            for(int l=0; l<particle_num_this_pixel; ++l)
                             {
                                 auto *particle = &PARTICLE_ARRAY[particle_to_pixel_index_map[id][l]];
 
-                                if(getFlagUseIndependentFilter()){ //|| particle->track_id > c_max_movable_object_instance_id
+                                if(getFlagUseIndependentFilter()){ //|| particle->track_id > g_max_movable_object_instance_id
                                     // Skip the particles that don't belong to the same object
                                     if(particle->track_id != labeled_point_cloud[i][j].track_id){
                                         continue;
                                     }
                                 }
                                 
-                                float gk = gaussian_random_.queryNormalPDF(particle->pos.x(), labeled_point_cloud[i][j].position.x(), sigma_this_pixel)
-                                       * gaussian_random_.queryNormalPDF(particle->pos.y(), labeled_point_cloud[i][j].position.y(), sigma_this_pixel)
-                                       * gaussian_random_.queryNormalPDF(particle->pos.z(), labeled_point_cloud[i][j].position.z(), sigma_this_pixel);
+                                float gk = gaussian_random_.queryNormalPDF(particle->pos.x, labeled_point_cloud[i][j].position.x(), sigma_this_pixel)
+                                       * gaussian_random_.queryNormalPDF(particle->pos.y, labeled_point_cloud[i][j].position.y(), sigma_this_pixel)
+                                       * gaussian_random_.queryNormalPDF(particle->pos.z, labeled_point_cloud[i][j].position.z(), sigma_this_pixel);
 
                                 if(!getFlagUseIndependentFilter())
                                 {
-                                    /// TODO: Use a better ID transition probability
-                                    gk *= getForgettingFactor(particle->forget_count, forgetting_rate_);
+                                    gk *= getForgettingFactor(particle->forget_count, forgetting_rate_, max_forget_count_);
                                     if(particle->track_id != labeled_point_cloud[i][j].track_id)
                                     {
-                                        gk *= 0.5f; // ID transition probability
+                                        gk *= id_transition_probability_; // ID transition probability. 
                                     }
                                 }
 
-                                ck_this_pixel += particle->occ_weight * gk;
+                                ck_this_pixel += particle->pos.weight * gk;
                             }
                         }
                     }
@@ -1372,77 +1047,11 @@ private:
                 float sigma_this_pixel = labeled_point_cloud[i][j].sigma;
 
                 // Update particles in each pixel
-                int particle_num_this_pixel = particle_to_pixel_num_array[i][j];
-                int max_particle_num_in_array = std::min(particle_num_this_pixel, C_ESTIMATED_PARTICLE_NUM_PER_PYRAMID);
-                for(int l=0; l<max_particle_num_in_array; ++l)
-                {
-                    auto *particle = &PARTICLE_ARRAY[particle_to_pixel_index_array[i][j][l]];
-                    float acc_this_particle = 0.f;
-
-                    bool updated_with_right_id = false;
-
-                    for(int m=-neighbor_height_half; m<=neighbor_height_half; ++m)
-                    {
-                        for(int n=-neighbor_width_half; n<=neighbor_width_half; ++n)
-                        {
-                            int neighbor_i = i + m;
-                            int neighbor_j = j + n;
-
-                            if(neighbor_i < 0 || neighbor_i >= g_image_height || neighbor_j < 0 || neighbor_j >= g_image_width){
-                                continue;
-                            }
-
-                            // Check if the point is valid
-                            if(!labeled_point_cloud[neighbor_i][neighbor_j].is_valid){ 
-                                continue;
-                            }
-
-                            if(getFlagUseIndependentFilter() ){ //|| particle->track_id > c_max_movable_object_instance_id
-                                // Skip the point that don't belong to the same object
-                                if(labeled_point_cloud[neighbor_i][neighbor_j].track_id != particle->track_id){
-                                    continue;
-                                }
-                            }
-
-                            float gk = gaussian_random_.queryNormalPDF(particle->pos.x(), labeled_point_cloud[neighbor_i][neighbor_j].position.x(), sigma_this_pixel)
-                                        * gaussian_random_.queryNormalPDF(particle->pos.y(), labeled_point_cloud[neighbor_i][neighbor_j].position.y(), sigma_this_pixel)
-                                        * gaussian_random_.queryNormalPDF(particle->pos.z(), labeled_point_cloud[neighbor_i][neighbor_j].position.z(), sigma_this_pixel);
-                            
-                            if(!getFlagUseIndependentFilter())
-                            {
-                                /// TODO: Use a better ID transition probability
-                                if(particle->track_id != labeled_point_cloud[neighbor_i][neighbor_j].track_id){
-                                    gk *= 0.5f; // ID transition probability
-                                }else{
-                                    if(gk > c_min_rightly_updated_pdf){updated_with_right_id = true;}
-                                }
-                                gk *= getForgettingFactor(particle->forget_count, forgetting_rate_);
-                            }
-                            
-                            acc_this_particle += gk / ck_kappa_array[neighbor_i][neighbor_j];
-                        }
-                    }
-
-                    particle->occ_weight *= (acc_this_particle * detection_probability_ + 1.f - detection_probability_);
-                    particle->status = Particle_Status::UPDATED;
-                    particle->time_stamp = global_time_stamp;
-
-                    if(!getFlagUseIndependentFilter()){
-                        if(updated_with_right_id){
-                            particle->forget_count = 0;
-                        }else{
-                            if(particle->forget_count < 5){particle->forget_count += 1;}
-                        }
-                    }           
-
-                }
-
-                // Consider the overflowed particles stored in the map
-                int overflowed_particle_num = particle_num_this_pixel - C_ESTIMATED_PARTICLE_NUM_PER_PYRAMID;
-                if(overflowed_particle_num > 0)
+                int particle_num_this_pixel = particle_to_pixel_num_array[i][j];                
+                if(particle_num_this_pixel > 0)
                 {
                     int id = i*g_image_width + j;
-                    for(int l=0; l<overflowed_particle_num; ++l)
+                    for(int l=0; l<particle_num_this_pixel; ++l)
                     {
                         auto *particle = &PARTICLE_ARRAY[particle_to_pixel_index_map[id][l]];
                         float acc_this_particle = 0.f;
@@ -1464,7 +1073,7 @@ private:
                                     continue;
                                 }
 
-                                if(getFlagUseIndependentFilter()) //|| particle->track_id > c_max_movable_object_instance_id
+                                if(getFlagUseIndependentFilter()) //|| particle->track_id > g_max_movable_object_instance_id
                                 {
                                     // Skip the point that don't belong to the same object
                                     if(labeled_point_cloud[neighbor_i][neighbor_j].track_id != particle->track_id){
@@ -1472,26 +1081,26 @@ private:
                                     }
                                 }
                                 
-                                float gk = gaussian_random_.queryNormalPDF(particle->pos.x(), labeled_point_cloud[neighbor_i][neighbor_j].position.x(), sigma_this_pixel)
-                                            * gaussian_random_.queryNormalPDF(particle->pos.y(), labeled_point_cloud[neighbor_i][neighbor_j].position.y(), sigma_this_pixel)
-                                            * gaussian_random_.queryNormalPDF(particle->pos.z(), labeled_point_cloud[neighbor_i][neighbor_j].position.z(), sigma_this_pixel);
+                                
+                                float gk = gaussian_random_.queryNormalPDF(particle->pos.x, labeled_point_cloud[neighbor_i][neighbor_j].position.x(), sigma_this_pixel)
+                                            * gaussian_random_.queryNormalPDF(particle->pos.y, labeled_point_cloud[neighbor_i][neighbor_j].position.y(), sigma_this_pixel)
+                                            * gaussian_random_.queryNormalPDF(particle->pos.z, labeled_point_cloud[neighbor_i][neighbor_j].position.z(), sigma_this_pixel);
 
                                 if(!getFlagUseIndependentFilter())
                                 {
-                                    /// TODO: Use a better ID transition probability
                                     if(particle->track_id != labeled_point_cloud[neighbor_i][neighbor_j].track_id){
-                                        gk *= 0.5f; // ID transition probability
+                                        gk *= id_transition_probability_; // ID transition probability.
                                     }else{
                                         if(gk > c_min_rightly_updated_pdf){updated_with_right_id = true;}
                                     }
-                                    gk *= getForgettingFactor(particle->forget_count, forgetting_rate_);
+                                    gk *= getForgettingFactor(particle->forget_count, forgetting_rate_, max_forget_count_);
                                 }
                                 
                                 acc_this_particle += gk / ck_kappa_array[neighbor_i][neighbor_j];
                             }
                         }
 
-                        particle->occ_weight *= (acc_this_particle * detection_probability_ + 1.f - detection_probability_);
+                        particle->pos.weight *= (acc_this_particle * detection_probability_ + 1.f - detection_probability_);
                         particle->status = Particle_Status::UPDATED;
                         particle->time_stamp = global_time_stamp;
 
@@ -1511,6 +1120,328 @@ private:
 
     }
 
+
+    /// @brief Add a Guessed Particle from the template matching result
+    /// @param pt 
+    inline void addGuessedParticle(const LabeledPoint &pt)
+    {
+        // Add a new particle to the ring buffer. No noise.
+        uint32_t voxel_idx, ptc_idx;
+        op_mt_.addGuessedParticles(pt.position, pt.label_id, pt.track_id, voxel_idx, ptc_idx);
+        if(ptc_idx != INVALID_PARTICLE_INDEX)
+        {   
+            // Add the new particle to the object. 
+            int track_id = static_cast<int>(pt.track_id);
+            int label_id = static_cast<int>(pt.label_id);
+
+            // Check if label_id is in g_movable_object_label_ids
+            if(track_id <= g_max_movable_object_instance_id){
+                object_set_.obj_ptc_hash_map.addParticleToObj(track_id, ptc_idx);
+            }
+        }
+    }
+
+    /// @brief Add a new born particle to the ring buffer and resample if necessary
+    /// @param pt 
+    /// @param added_particle_num 
+    /// @param resampled_voxel_indices 
+    inline void addNewbornParticleAndResample(const LabeledPoint &pt, uint32_t &added_particle_num, std::unordered_set<uint32_t> &resampled_voxel_indices)
+    {
+        // Add a new particle to the ring buffer. No noise.
+        uint32_t voxel_idx, ptc_idx;
+        op_mt_.addNewParticleWithSemantics(pt.position, pt.label_id, pt.track_id, voxel_idx, ptc_idx);
+        if(ptc_idx != INVALID_PARTICLE_INDEX)
+        {   
+            // Add the new particle to the object. 
+            int track_id = static_cast<int>(pt.track_id);
+            int label_id = static_cast<int>(pt.label_id);
+            added_particle_num += 1;
+
+            if(track_id <= g_max_movable_object_instance_id){
+                object_set_.obj_ptc_hash_map.addParticleToObj(track_id, ptc_idx);
+            }
+        }
+
+        // Resample if necessary
+        if(voxel_idx != INVALID_PARTICLE_INDEX && resampled_voxel_indices.count(voxel_idx) == 0){
+            if(resampleParticlesInVoxel(voxel_idx, object_set_.obj_ptc_hash_map)){
+                resampled_voxel_indices.insert(voxel_idx);
+            }
+        }
+    }
+
+    /// @brief Add new particles to the ring buffer with the consideration of noise and resample if necessary
+    /// @param pt 
+    /// @param added_particle_num 
+    /// @param resampled_voxel_indices 
+    inline void addNewbornParticleWithNoiseAndResample(const LabeledPoint &pt, uint32_t &added_particle_num, std::unordered_set<uint32_t> &resampled_voxel_indices)
+    {
+        // Add new particles to the ring buffer with noise
+        for(int n=0; n<nb_ptc_num_per_point_; ++n)
+        {
+            Eigen::Vector3f noise;
+            if(nb_ptc_num_per_point_ == 1){
+                noise << 0.f, 0.f, 0.f;
+            }else{
+                float sigma_this_pixel = pt.sigma;
+                noise << gaussian_random_.queryNormalRandomZeroMean(sigma_this_pixel), gaussian_random_.queryNormalRandomZeroMean(sigma_this_pixel), gaussian_random_.queryNormalRandomZeroMean(sigma_this_pixel);
+            }
+
+            uint32_t voxel_idx, ptc_idx;
+            op_mt_.addNewParticleWithSemantics(pt.position + noise, pt.label_id, pt.track_id, voxel_idx, ptc_idx);
+
+            if(ptc_idx != INVALID_PARTICLE_INDEX) // Particle is added successfully
+            {   
+                // Add the new particle to the object. 
+                int track_id = static_cast<int>(pt.track_id);
+                int label_id = static_cast<int>(pt.label_id);
+                added_particle_num += 1;
+
+                // Only add the particle to the object if it is a movable object. CHG. May need to change this.
+                if(track_id <= g_max_movable_object_instance_id){
+                    object_set_.obj_ptc_hash_map.addParticleToObj(track_id, ptc_idx);
+                }
+
+            }else{
+                // Resampling if necessary
+                if(voxel_idx != INVALID_PARTICLE_INDEX && resampled_voxel_indices.count(voxel_idx) == 0){
+                    if(resampleParticlesInVoxel(voxel_idx, object_set_.obj_ptc_hash_map)){ // Resample the particles in the voxel
+                        resampled_voxel_indices.insert(voxel_idx);
+
+                        // Try to add the particle again
+                        op_mt_.addNewParticleWithSemantics(pt.position + noise, pt.label_id, pt.track_id, voxel_idx, ptc_idx); // Try to add the particle again
+
+                        if(ptc_idx != INVALID_PARTICLE_INDEX) // Particle is added successfully
+                        {   
+                            // Add the new particle to the object. 
+                            int track_id = static_cast<int>(pt.track_id);
+                            int label_id = static_cast<int>(pt.label_id);
+                            added_particle_num += 1;
+
+                            // Only add the particle to the object if it is a movable object. CHG. May need to change this.
+                            if(track_id <= g_max_movable_object_instance_id){
+                                object_set_.obj_ptc_hash_map.addParticleToObj(track_id, ptc_idx);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+
+    /// @brief Get the occupancy result. The occupied voxel will be colored and those which are in the FOV will be colored with higher brightness.
+    /// @param occupied_point_cloud 
+    /// @param freespace_point_cloud
+    /// @param extrinsic_matrix 
+    /// @param intrinsic_matrix 
+    /// @param get_freespace if true, the freespace point cloud will be generated
+    inline void getOccupancyResult(pcl::PointCloud<pcl::PointXYZRGB>::Ptr &occupied_point_cloud, pcl::PointCloud<pcl::PointXYZRGB>::Ptr &freespace_point_cloud, const Eigen::Matrix4f &extrinsic_matrix, const Eigen::Matrix3f &intrinsic_matrix, bool get_freespace = false)
+    {   
+        Eigen::Vector3f camera_position = extrinsic_matrix.inverse().eval().block<3,1>(0,3);
+
+        int invalid_voxel_num = 0;
+        for(uint32_t i=0; i<C_VOXEL_NUM_TOTAL; ++i){
+            uint16_t track_id;
+            uint8_t label_id;
+
+            /// TODO:improve the efficiency of this function: determineIfVoxelOccupied
+            int occ_result_this_voxel;
+            if(getFlagUsePignisticProbability()){
+                /// Pignistic probability is aborted for now. TOO SLOW and no obvious improvement.
+                // occ_result_this_voxel = op_mt_.determineIfVoxelOccupiedConsiderFreePoint(i, label_id, track_id, occupancy_threshold_);
+                occ_result_this_voxel = op_mt_.determineIfVoxelOccupied(i, label_id, track_id, occupancy_threshold_);
+            }else{
+                occ_result_this_voxel = op_mt_.determineIfVoxelOccupied(i, label_id, track_id, occupancy_threshold_);
+            }
+
+            if(occ_result_this_voxel > 0){  //&& occ_result_this_voxel <= occupied_max_flag    
+                Eigen::Vector3f voxel_pos;
+                op_mt_.getVoxelGlobalPosition(i, voxel_pos);
+                pcl::PointXYZRGB pt;
+                
+                if(visualize_with_zero_center_){
+                    pt.x = voxel_pos.x() - camera_position.x();
+                    pt.y = voxel_pos.y() - camera_position.y();
+                    pt.z = voxel_pos.z() - camera_position.z();
+                }else{
+                    pt.x = voxel_pos.x();
+                    pt.y = voxel_pos.y();
+                    pt.z = voxel_pos.z();
+                }
+
+
+                if(occ_result_this_voxel == 1){ // Occupied
+                    // Using the color map
+                    static int background_id = g_label_id_map_default["Background"];
+                    if(label_id == background_id){ 
+                        // Color by z axis. Map to color_map_jet_256_
+#if SETTING != 3
+                        // Adjust to display the color map in the right axis
+                        int color_index = std::min(std::max(static_cast<int>((-pt.z+2.f)*51.2f), 0), 255);
+#else
+                        int color_index = std::min(std::max(static_cast<int>((pt.y+2.f)*51.2f), 0), 255);
+#endif
+            
+                        pt.r = color_map_jet_256_[color_index](0);
+                        pt.g = color_map_jet_256_[color_index](1);
+                        pt.b = color_map_jet_256_[color_index](2);
+
+                        if(if_out_evaluation_format_){
+                            pt.r = 0;
+                            pt.g = 0;
+                            pt.b = 0;
+                        }
+                        
+                    }
+#if SETTING == 0 // For KITTI 360 semantic slam test. Color represents the label id.
+                    else{
+                        cv::Vec3b color = g_label_color_map_default[label_id];
+                        pt.r = color[2];
+                        pt.g = color[1];
+                        pt.b = color[0];
+                    }
+#else 
+                    else if(track_id > g_max_movable_object_instance_id){ // Static objects
+                        cv::Vec3b color = g_label_color_map_default[label_id];
+                        pt.r = color[2];
+                        pt.g = color[1];
+                        pt.b = color[0];
+                    }else{  // Cars et.al.
+                        if(if_out_evaluation_format_)
+                        {
+                            pt.r = label_id;
+                            pt.g = track_id >> 8;
+                            pt.b = track_id & 0xFF;
+                        }else{
+                            pt.r = 160;
+                            pt.g = color_map_int_256_[track_id];
+                            pt.b = color_map_int_256_[label_id];
+                        }
+                    }
+#endif
+                    
+                    
+                }else{ // Guessed to be occupied
+                    // Use white for guessed result
+                    pt.r = 255;
+                    pt.g = 255;
+                    pt.b = 255;
+                    // std::cout << "Matched point ";
+                }
+
+                if(!if_out_evaluation_format_){
+                    // Turn to HSV space
+                    cv::Mat rgb(1, 1, CV_8UC3, cv::Scalar(pt.r, pt.g, pt.b));
+                    cv::Mat hsv;
+                    cv::cvtColor(rgb, hsv, cv::COLOR_RGB2HSV);
+                    
+                    // Check if the point is in the FOV
+                    if(!op_mt_.checkIfPointInFrustum(voxel_pos, extrinsic_matrix, intrinsic_matrix, g_image_width, g_image_height))
+                    {
+                        hsv.at<cv::Vec3b>(0,0)[2] *= 0.7f;
+                    }
+                    // Turn back to RGB space
+                    cv::Mat rgb2;
+                    cv::cvtColor(hsv, rgb2, cv::COLOR_HSV2RGB);
+
+                    pt.r = rgb2.at<cv::Vec3b>(0,0)[0];
+                    pt.g = rgb2.at<cv::Vec3b>(0,0)[1];
+                    pt.b = rgb2.at<cv::Vec3b>(0,0)[2];
+                }
+
+                occupied_point_cloud->points.push_back(pt);
+            }else if(get_freespace && occ_result_this_voxel == 0){
+                Eigen::Vector3f voxel_pos;
+                op_mt_.getVoxelGlobalPosition(i, voxel_pos);
+
+                pcl::PointXYZRGB pt;
+
+                if(visualize_with_zero_center_)
+                {
+                    pt.x = voxel_pos.x() - camera_position.x();
+                    pt.y = voxel_pos.y() - camera_position.y();
+                    pt.z = voxel_pos.z() - camera_position.z();
+                }else{
+                    pt.x = voxel_pos.x();
+                    pt.y = voxel_pos.y();
+                    pt.z = voxel_pos.z();
+                }
+
+                pt.r = 0;
+                pt.g = 255;
+                pt.b = 0;
+
+                freespace_point_cloud->points.push_back(pt);
+            }
+
+        }
+
+#if VERBOSE_MODE == 1
+        std::cout << "Occupied voxel num = " << occupied_point_cloud->points.size() << ", Free voxel num = " << freespace_point_cloud->points.size() << "." << std::endl;
+#endif
+    }
+
+    /// @brief Get the 3d bounding box of the object composed of points or particles
+    /// @param points Input points
+    /// @param bbox3d Result
+    inline void getBoundingBox(const std::vector<Eigen::Vector3d> &points, BBox3D &bbox3d)
+    {
+        Eigen::Vector3d min_pt, max_pt;
+        min_pt << 1000.f, 1000.f, 1000.f;
+        max_pt << -1000.f, -1000.f, -1000.f;
+
+        for(auto &pt : points)
+        {
+            if(pt.x() < min_pt.x()){min_pt.x() = pt.x();}
+            if(pt.y() < min_pt.y()){min_pt.y() = pt.y();}
+            if(pt.z() < min_pt.z()){min_pt.z() = pt.z();}
+
+            if(pt.x() > max_pt.x()){max_pt.x() = pt.x();}
+            if(pt.y() > max_pt.y()){max_pt.y() = pt.y();}
+            if(pt.z() > max_pt.z()){max_pt.z() = pt.z();}
+        }
+
+        bbox3d.center.x() = (min_pt.x() + max_pt.x()) / 2.f;
+        bbox3d.center.y() = (min_pt.y() + max_pt.y()) / 2.f;
+        bbox3d.center.z() = (min_pt.z() + max_pt.z()) / 2.f;
+
+        bbox3d.size.x() = max_pt.x() - min_pt.x();
+        bbox3d.size.y() = max_pt.y() - min_pt.y();
+        bbox3d.size.z() = max_pt.z() - min_pt.z();
+    }
+
+    
+    /// @brief Check if the point is out of the FOV
+    /// @param camera_position Camera position in the global frame
+    /// @param camera_orientation Camera orientation in the global frame
+    /// @param point_global Point position in the global frame
+    /// @param margin Margin of the image to be considered. Default is 0.
+    /// @return True if the point is out of the FOV
+    bool isPointOutOfFOV(const Eigen::Vector3d &camera_position, const Eigen::Quaterniond &camera_orientation, const Eigen::Vector3d &point_global, int margin = 0)
+    {
+        // Transform point to camera frame
+        Eigen::Vector3d point_camera = camera_orientation.inverse() * (point_global - camera_position);
+
+        // Check if the point is in front of the camera
+        if (point_camera.z() <= 0) {
+            return true;
+        }
+
+        // Project the point onto the image plane
+        double u = g_camera_fx * (point_camera.x() / point_camera.z()) + g_camera_cx;
+        double v = g_camera_fy * (point_camera.y() / point_camera.z()) + g_camera_cy;
+
+        // Check if the point is within the image bounds
+        if (u < margin || u >= g_image_width - margin || v < margin || v >= g_image_height - margin) {
+            return true;
+        }
+
+        // The point is within the FOV
+        return false;
+    }
+
+
     /// @brief Resample the particles in a voxel to avoid particle degenaration
     /// @param voxel_index
     /// @return true if resampled 
@@ -1524,7 +1455,7 @@ private:
         for(int i=1; i<C_MAX_PARTICLE_NUM_PER_VOXEL; ++i)
         {
             if(PARTICLE_ARRAY[start_ptc_seq+i].status == Particle_Status::UPDATED){
-                weight_sum += PARTICLE_ARRAY[start_ptc_seq+i].occ_weight;
+                weight_sum += PARTICLE_ARRAY[start_ptc_seq+i].pos.weight;
                 ++ updated_particle_num;
             }
         }
@@ -1563,7 +1494,7 @@ private:
                 uint32_t particle_index = start_ptc_seq+i;
                 if(PARTICLE_ARRAY[particle_index].status == Particle_Status::UPDATED){
                     int particle_track_id = PARTICLE_ARRAY[particle_index].track_id;
-                    particle_weight_sum += PARTICLE_ARRAY[particle_index].occ_weight;
+                    particle_weight_sum += PARTICLE_ARRAY[particle_index].pos.weight;
 
                     if(particle_weight_sum < particle_weight_sum_threshold){
                         // Remove the particle from the particle array
@@ -1571,21 +1502,10 @@ private:
                         // Remove the particle from the object particle hash map
                         obj_ptc_hash_map.removeParticleFromObj(particle_track_id, particle_index);
                     }else{
-                        PARTICLE_ARRAY[particle_index].occ_weight = weight_per_particle;
+                        PARTICLE_ARRAY[particle_index].pos.weight = weight_per_particle;
                         particle_weight_sum_threshold += weight_per_particle;
                         // Copy the particle to a vacant position if the weight of the particle is very large
                         while(particle_weight_sum > particle_weight_sum_threshold){
-                            // Find a vacant position in the voxel
-                            for(int j=1; j<C_MAX_PARTICLE_NUM_PER_VOXEL; ++j){
-                                uint32_t copied_particle_index = start_ptc_seq+j;
-                                if(PARTICLE_ARRAY[copied_particle_index].status == Particle_Status::INVALID){
-                                    PARTICLE_ARRAY[copied_particle_index] = PARTICLE_ARRAY[particle_index]; // Copy
-                                    PARTICLE_ARRAY[copied_particle_index].status = Particle_Status::COPIED; // Set status as COPIED in case next resampling will still consider this particle
-                                    // Add the particle to the object particle hash map
-                                    obj_ptc_hash_map.addParticleToObj(particle_track_id, copied_particle_index);
-                                    break;
-                                }
-                            }
                             particle_weight_sum_threshold += weight_per_particle;
                         }
                     }
@@ -1596,20 +1516,6 @@ private:
         }else{
             return false;
         }
-
-        /// TODO: Further Verify the resampling result
-        
-        // For Test: Count the number of particles in the voxel
-        // uint32_t particle_num = 0;
-        // for(int i=1; i<C_MAX_PARTICLE_NUM_PER_VOXEL; ++i)
-        // {
-        //     if(PARTICLE_ARRAY[start_ptc_seq+i].status == Particle_Status::UPDATED || PARTICLE_ARRAY[start_ptc_seq+i].status == Particle_Status::COPIED){
-        //         ++ particle_num;
-        //     }
-        // }
-        // if(updated_particle_num > 0){
-        //     std::cout << "Original Updated Particle number " << updated_particle_num << ". Resampled Particle number: " << particle_num << std::endl;
-        // }
     }
 
 
@@ -1635,21 +1541,13 @@ private:
                 // Use particle weight sum
                 float weight_sum = 0.f;
                 int particle_num_this_pixel = particle_to_pixel_num_array[i][j];
-                int particle_num_vector = std::min(particle_num_this_pixel, C_ESTIMATED_PARTICLE_NUM_PER_PYRAMID);
-                int overflowed_particle_num = particle_num_this_pixel - C_ESTIMATED_PARTICLE_NUM_PER_PYRAMID;
 
-                for(int m=0; m<particle_num_vector; ++m)
-                {
-                    auto *particle = &PARTICLE_ARRAY[particle_to_pixel_index_array[i][j][m]];
-                    weight_sum += particle->occ_weight;
-                }
-
-                if(overflowed_particle_num > 0){
+                if(particle_num_this_pixel > 0){
                     int id = i*g_image_width + j;
-                    for(int m=0; m<overflowed_particle_num; ++m)
+                    for(int m=0; m<particle_num_this_pixel; ++m)
                     {
                         auto *particle = &PARTICLE_ARRAY[particle_to_pixel_index_map[id][m]];
-                        weight_sum += particle->occ_weight;
+                        weight_sum += particle->pos.weight;
                     }
                 }
 
@@ -1667,6 +1565,8 @@ private:
         // Show the image
         cv::imshow("pyramid_image_weight", pyramid_image_weight);
         cv::imshow("pyramid_image_number", pyramid_image_number);
+
+        cv::waitKey(1);
     }
 };
 

@@ -43,16 +43,14 @@ public:
             return;
         }
 
-        // Define variables and containers for getIdxOfVisibleParitlces
-        // const uint32_t main_axis_storage_size = static_cast<uint32_t>(main_axis_max_idx - main_axis_min_idx);
-        
+        // Define variables and containers for getIdxOfVisibleParitlces        
         /// TODO: Use better way to calculate the size of the container and use a smaller container. using bool vector takes only one bit for each element.
-        std::vector<std::vector<std::vector<bool>>> visited_points(C_VOXEL_NUM_AXIS+1, std::vector<std::vector<bool>>(C_VOXEL_NUM_AXIS+1, std::vector<bool>(C_VOXEL_NUM_AXIS+1, false)));
-        std::vector<std::vector<std::vector<bool>>> added_voxels_idx(C_VOXEL_NUM_AXIS, std::vector<std::vector<bool>>(C_VOXEL_NUM_AXIS, std::vector<bool>(C_VOXEL_NUM_AXIS, false)));
+        std::vector<std::vector<std::vector<bool>>> visited_points(C_VOXEL_NUM_AXIS_X+1, std::vector<std::vector<bool>>(C_VOXEL_NUM_AXIS_Y+1, std::vector<bool>(C_VOXEL_NUM_AXIS_Z+1, false)));
+        std::vector<std::vector<std::vector<bool>>> added_voxels_idx(C_VOXEL_NUM_AXIS_X, std::vector<std::vector<bool>>(C_VOXEL_NUM_AXIS_Y, std::vector<bool>(C_VOXEL_NUM_AXIS_Z, false)));
         std::queue<Eigen::Vector3i> point_queue;
 
         // Calculate the offset variable from a voxel index to global frame position
-        Eigen::Vector3f voxel_to_global_offset = map_center_pos + Eigen::Vector3f(map_p_min_const, map_p_min_const, map_p_min_const);
+        Eigen::Vector3f voxel_to_global_offset = map_center_pos + Eigen::Vector3f(map_p_min_const[0], map_p_min_const[1], map_p_min_const[2]);
 
         // Get the intrinsic matrix
         Eigen::Matrix3f intrinsic_matrix;
@@ -90,7 +88,7 @@ public:
                             if(adjacent_voxel_idx(main_axis_) < main_axis_min_idx_ || adjacent_voxel_idx(main_axis_) >= main_axis_max_idx_) {continue;}
 
                             // Skip if the voxel indices are out of bounds
-                            if (adjacent_voxel_idx.x() < 0 || adjacent_voxel_idx.x() >= C_VOXEL_NUM_AXIS || adjacent_voxel_idx.y() < 0 || adjacent_voxel_idx.y() >= C_VOXEL_NUM_AXIS || adjacent_voxel_idx.z() < 0 || adjacent_voxel_idx.z() >= C_VOXEL_NUM_AXIS) {continue;}
+                            if (adjacent_voxel_idx.x() < 0 || adjacent_voxel_idx.x() >= C_VOXEL_NUM_AXIS_X || adjacent_voxel_idx.y() < 0 || adjacent_voxel_idx.y() >= C_VOXEL_NUM_AXIS_Y || adjacent_voxel_idx.z() < 0 || adjacent_voxel_idx.z() >= C_VOXEL_NUM_AXIS_Z) {continue;}
 
                             // Check if voxel has been added before
                             if (added_voxels_idx[adjacent_voxel_idx.x()][adjacent_voxel_idx.y()][adjacent_voxel_idx.z()]){continue;}
@@ -113,29 +111,20 @@ public:
                                     // Calculate the particle position the image frame
                                     int row, col;
                                     float camera_frame_z;
-                                    if(calculateParticlePositionInImage(*ptc, extrinsic_matrix_, intrinsic_matrix, row, col, camera_frame_z)){
+                                    if(calculateParticleBasicStateInImage(*ptc, extrinsic_matrix_, intrinsic_matrix, row, col, camera_frame_z)){
                                         // Check if the particle is in depth range
-                                        /// TODO: Use better way to determine the visibility of a particle.
+                                        /// TODO: Use faster way to determine the visibility of a particle.
                                         static const float one_sigma_error_coeff = g_depth_error_stddev_at_one_meter + 1.f;
                                         if(camera_frame_z > depth_img_.at<float>(row, col) * one_sigma_error_coeff){
                                             // Skip if the particle is out of depth range. The particle will not be updated.
                                             continue;
                                         }
-
-                                        if(particle_to_pixel_num_array[row][col] < C_ESTIMATED_PARTICLE_NUM_PER_PYRAMID){
-                                            // Add the particle index to the pyramid
-                                            mt_basic_mtx.lock();
-                                            particle_to_pixel_index_array[row][col][particle_to_pixel_num_array[row][col]] = particle_start_index+i;
-                                            particle_to_pixel_num_array[row][col] ++;
-                                            mt_basic_mtx.unlock();
-                                        }else{
-                                            // If no enough space in the pyramid (particle_to_pixel_index_array). The particle will be stored in particle_to_pixel_index_map.
-                                            int id = row * g_image_width + col;
-                                            mt_basic_mtx.lock();
-                                            particle_to_pixel_index_map[id].push_back(particle_start_index+i);
-                                            particle_to_pixel_num_array[row][col] ++;
-                                            mt_basic_mtx.unlock();
-                                        }
+                                        
+                                        int id = row * g_image_width + col;
+                                        mt_basic_mtx.lock();
+                                        particle_to_pixel_index_map[id].push_back(particle_start_index+i);
+                                        particle_to_pixel_num_array[row][col] ++;
+                                        mt_basic_mtx.unlock();
                                     }
                                 }
                             }
@@ -159,7 +148,7 @@ public:
                     if(neighbor_point(main_axis_) < main_axis_min_idx_ || neighbor_point(main_axis_) >= main_axis_max_idx_) {continue;}
 
                     // Skip if the point indices are out of bounds or the point has been visited
-                    if (neighbor_point.x() < 0 || neighbor_point.x() > C_VOXEL_NUM_AXIS || neighbor_point.y() < 0 || neighbor_point.y() > C_VOXEL_NUM_AXIS || neighbor_point.z() < 0 || neighbor_point.z() > C_VOXEL_NUM_AXIS || visited_points[neighbor_point.x()][neighbor_point.y()][neighbor_point.z()]){continue;}
+                    if (neighbor_point.x() < 0 || neighbor_point.x() > C_VOXEL_NUM_AXIS_X || neighbor_point.y() < 0 || neighbor_point.y() > C_VOXEL_NUM_AXIS_Y || neighbor_point.z() < 0 || neighbor_point.z() > C_VOXEL_NUM_AXIS_Z || visited_points[neighbor_point.x()][neighbor_point.y()][neighbor_point.z()]){continue;}
                     // Add the point to the queue
                     point_queue.push(neighbor_point);
                 }
@@ -202,17 +191,19 @@ public:
             uint32_t start_ptc_seq = i << C_MAX_PARTICLE_NUM_PER_VOXEL_N;
             // Add time particle. Always the first particle in a voxel.
             PARTICLE_ARRAY[start_ptc_seq].status = Particle_Status::TIMEPTC;
-            PARTICLE_ARRAY[start_ptc_seq].pos << 0.f, 0.f, 0.f;
-            PARTICLE_ARRAY[start_ptc_seq].occ_weight = 0.f;
-            PARTICLE_ARRAY[start_ptc_seq].free_weight = 0.f;
+            PARTICLE_ARRAY[start_ptc_seq].pos.x = 0.f;
+            PARTICLE_ARRAY[start_ptc_seq].pos.y = 0.f;
+            PARTICLE_ARRAY[start_ptc_seq].pos.z = 0.f;
+            PARTICLE_ARRAY[start_ptc_seq].pos.weight = 0.f;
             PARTICLE_ARRAY[start_ptc_seq].time_stamp = 0;
 
             for(int j=1; j<C_MAX_PARTICLE_NUM_PER_VOXEL; ++j)
             {
                 PARTICLE_ARRAY[start_ptc_seq+j].status = Particle_Status::INVALID;
-                PARTICLE_ARRAY[start_ptc_seq+j].pos << 0.f, 0.f, 0.f;
-                PARTICLE_ARRAY[start_ptc_seq+j].occ_weight = 0.f;
-                PARTICLE_ARRAY[start_ptc_seq+j].free_weight = 0.f;
+                PARTICLE_ARRAY[start_ptc_seq+j].pos.x = 0.f;
+                PARTICLE_ARRAY[start_ptc_seq+j].pos.y = 0.f;
+                PARTICLE_ARRAY[start_ptc_seq+j].pos.z = 0.f;
+                PARTICLE_ARRAY[start_ptc_seq+j].pos.weight = 0.f;
                 PARTICLE_ARRAY[start_ptc_seq+j].time_stamp = 0;
             }
 

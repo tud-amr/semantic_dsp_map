@@ -1,0 +1,31 @@
+depth_image_topic: /camera/depth_repub
+camera_pose_topic: /camera/pose_repub
+mask_group_topic: /mask_group_super_glued
+frame_id: zed2
+visualize_with_zero_center: true
+if_out_evaluation_format: false # Will show FOV with bright color if false
+if_output_freespace: false
+
+beyesian_movement_distance_threshold: 0.2
+beyesian_movement_decrement: 0.05
+beyesian_movement_increment: 0.2
+beyesian_movement_probability_threshold: 0.3  # If the threshold is below 0.5, objects are considered dynamic initially.
+
+if_consider_depth_noise: true
+if_use_independent_filter: false
+
+
+match_score_threshold: 0.6
+max_obersevation_lost_time: 20
+nb_ptc_num_per_point: 1
+noise_number: 0.2
+detection_probability: 0.8
+occupancy_threshold: 0.15
+
+depth_noise_model_first_order: 0.02
+depth_noise_model_zero_order: 0.3
+
+# Useful when if_use_independent_filter is false
+forgetting_rate: 1
+max_forget_count: 5
+id_transition_probability: 0.5

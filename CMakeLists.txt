@@ -2,7 +2,10 @@ cmake_minimum_required(VERSION 3.10)
 project(semantic_dsp_map)
 
 set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-add_definitions(-std=c++17 -g -O3 -ftree-vectorize -march=native)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
+set(CMAKE_BUILD_TYPE Release)
+
+add_definitions(-std=c++17 -O3 -ftree-vectorize -march=native) 
 
 
 find_package(catkin REQUIRED COMPONENTS
@@ -29,8 +32,6 @@ include_directories(${Eigen_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${YAML_CPP_INCLUDE_DIR})
 
-
-add_executable(mapping_with_external_data src/mapping_with_external_data.cpp)
-target_link_libraries(mapping_with_external_data ${PCL_LIBRARIES} ${catkin_LIBRARIES} ${OpenCV_LIBS} ${YAML_CPP_LIBRARIES})
-
+add_executable(mapping src/mapping.cpp)
+target_link_libraries(mapping ${PCL_LIBRARIES} ${catkin_LIBRARIES} ${OpenCV_LIBS} ${YAML_CPP_LIBRARIES})
 

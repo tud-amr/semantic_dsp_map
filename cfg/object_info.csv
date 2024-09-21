@@ -1,0 +1,16 @@
+label_id,label,instance_id(-1 means not fixed),color_b,color_g,color_r
+0,Background,65535,0,0,0
+3,Terrain,65533,200,0,210
+4,Sky,65532,255,200,90
+5,Tree,65531,0,199,0
+6,Vegetation,65530,0,240,90
+7,Building,65529,140,140,140
+8,Road,65528,100,60,100
+9,GuardRail,65527,255,100,250
+10,TrafficSign,65526,0,255,255
+11,TrafficLight,65525,0,200,200
+12,Pole,65524,0,130,255
+13,Misc,65523,80,80,80
+14,Truck,-1,60,60,160
+15,Car,-1,80,127,255
+16,Person,-1,139,139,0

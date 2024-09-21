@@ -1,0 +1,30 @@
+depth_image_topic: /camera_depth_image
+camera_pose_topic: /camera_pose
+mask_group_topic: /mask_group_super_glued
+frame_id: map
+visualize_with_zero_center: true
+
+beyesian_movement_decrement: 0.1
+beyesian_movement_distance_threshold: 0.1
+beyesian_movement_increment: 0.2
+beyesian_movement_probability_threshold: 0.75 # If the threshold is below 0.5, objects are considered dynamic initially.
+
+if_consider_depth_noise: true
+if_out_evaluation_format: false
+if_output_freespace: false
+if_use_independent_filter: false
+
+match_score_threshold: 0.6
+max_obersevation_lost_time: 5
+nb_ptc_num_per_point: 1
+noise_number: 0.001
+detection_probability: 0.98
+occupancy_threshold: 0.5
+
+depth_noise_model_first_order: 0.01
+depth_noise_model_zero_order: 0.2
+
+# Useful when if_use_independent_filter is false
+forgetting_rate: 1.0
+max_forget_count: 3
+id_transition_probability: 0.2

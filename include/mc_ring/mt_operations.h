@@ -63,8 +63,6 @@ public:
         particle_to_pixel_index_map.clear();
 
         mtGetIdxOfVisibleParitlcesWithPartition(extrinsic_matrix, depth_img);
-
-        // mtGetIdxOfVisibleParitlcesSharedQueue(extrinsic_matrix, depth_img);
     }
 
 
@@ -106,7 +104,7 @@ private:
     }
 
 
-    /// @brief The Function uses multiple threads to find the particles in the FOV with Breadth-first search. We search the vertexes and then check voxels to realize searching in continous space. The result is written to particle_to_pixel_index_array and particle_to_pixel_num_array.
+    /// @brief The Function uses multiple threads to find the particles in the FOV with Breadth-first search. We search the vertexes and then check voxels to realize searching in continous space.
     /// @param extrinsic_matrix The extrinsic matrix of the camera
     /// @param depth_img The depth image. Used to check if a particle is occluded.
     void mtGetIdxOfVisibleParitlcesWithPartition(const Eigen::Matrix4f& extrinsic_matrix, const cv::Mat &depth_img)
@@ -123,7 +121,7 @@ private:
             
             Eigen::Vector3f start_point_map_frame = start_point_global_frame - map_center_pos;
             Eigen::Vector3i start_point_idx;
-            start_point_idx << static_cast<int>((start_point_map_frame.x()+map_p_max_const)*voxel_size_recip), static_cast<int>((start_point_map_frame.y()+map_p_max_const)*voxel_size_recip), static_cast<int>((start_point_map_frame.z()+map_p_max_const)*voxel_size_recip);
+            start_point_idx << static_cast<int>((start_point_map_frame.x()+map_p_max_const[0])*voxel_size_recip), static_cast<int>((start_point_map_frame.y()+map_p_max_const[1])*voxel_size_recip), static_cast<int>((start_point_map_frame.z()+map_p_max_const[2])*voxel_size_recip);
 
             mt_bfs_start_point_idx_vec.push_back(start_point_idx);
         }
@@ -148,8 +146,8 @@ private:
             max_main_axis_idx[i] = mt_bfs_start_point_idx_vec[i](main_axis);
         }
         min_main_axis_idx[thread_num_-1] = mt_bfs_start_point_idx_vec[thread_num_-2](main_axis);
-        max_main_axis_idx[thread_num_-1] = C_VOXEL_NUM_AXIS;
-
+        // max_main_axis_idx[thread_num_-1] = C_VOXEL_NUM_AXIS;
+        max_main_axis_idx[thread_num_-1] = 1 << C_VOXEL_NUM_AXIS_N_BIGGEST;
 
         // Reduce the main axis in mt_bfs_start_point_idx_vec by 1 to avoid the voxel in the boundary
         for(int i=0; i<thread_num_-1; ++i){

@@ -1,0 +1,11 @@
+<launch>
+    <!-- Before running the launch file. Make sure your conda environment is switched so that segmentation and tracking can work -->
+    <arg name="map_cfg" default="options_virtual_kitti2.yaml" />
+
+    <arg name="object_info_cfg" default="object_info.csv" />
+
+    <node pkg="semantic_dsp_map" type="mapping" name="mapping" output="screen" args="$(arg map_cfg) $(arg object_info_cfg)" />
+
+    <node pkg="rviz" type="rviz" name="rviz" args="-d $(find semantic_dsp_map)/rviz/virtual_kitti2.rviz" output="screen" />
+
+</launch>

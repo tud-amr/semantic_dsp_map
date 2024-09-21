@@ -12,7 +12,6 @@
 #pragma once
 
 inline bool g_if_consider_depth_noise  = false; ///< Whether to consider the noise in the depth image
-inline bool g_if_consider_tracking_noise = false; ///< Whether to consider the noise in the tracking result
 inline bool g_if_use_pignistic_probability = false; ///< Whether to use pignistic probability to determine the occupancy probability
 inline bool g_if_use_independent_filter = false; ///< Whether to use independent SMC-PHD filters for each instance
 inline bool g_if_use_template_matching = false; ///< Whether to use template matching to determine the occupancy probability
@@ -22,10 +21,6 @@ inline bool g_if_use_template_matching = false; ///< Whether to use template mat
 /// @brief Get the flag of considering the noise in the depth image
 /// @return 
 inline bool getFlagConsiderDepthNoise() {return g_if_consider_depth_noise;}
-
-/// @brief Get the flag of considering the noise in the tracking result
-/// @return
-inline bool getFlagConsiderTrackingNoise() {return g_if_consider_tracking_noise;}
 
 /// @brief Get the flag of using pignistic probability to determine the occupancy probability
 /// @return
@@ -44,10 +39,6 @@ inline bool getFlagUseTemplateMatching() {return g_if_use_template_matching;}
 /// @brief Set the flag of considering the noise in the depth image
 /// @param flag
 inline void setFlagConsiderDepthNoise(bool flag) {g_if_consider_depth_noise = flag;}
-
-/// @brief Set the flag of considering the noise in the tracking result
-/// @param flag
-inline void setFlagConsiderTrackingNoise(bool flag) {g_if_consider_tracking_noise = flag;}
 
 /// @brief Set the flag of using pignistic probability to determine the occupancy probability
 /// @param flag
