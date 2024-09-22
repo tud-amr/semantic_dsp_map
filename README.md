@@ -43,12 +43,12 @@ catkin build
 
 ### Test with Real-world Data Captured by ZED2 Camera
 Download a ros data [bag](https://drive.google.com/file/d/1uBWbLzmePzmY5ZFXP_wEjuAlcOgEeWVS/view?usp=sharing) 
-The bag contains downsampled depth image, camera pose and a message in "mask_kpts_msgs" form containing segmentation and transformation estimation results. The data is collected in Delft with a ZED2 camera.
+The bag contains downsampled depth image, camera pose and a message in "[mask_kpts_msgs](https://github.com/g-ch/mask_kpts_msgs)" form containing segmentation and transformation estimation results. The data is collected in Delft with a ZED2 camera.
 
 Launch the test by
 ```
 roslaunch semantic_dsp_map zed2.launch
-rosbag play clip1.bag  # Add -r 2 to accelerate playing
+rosbag play zed2_clip.bag  # Add -r 2 to accelerate playing
 ```
 
 
