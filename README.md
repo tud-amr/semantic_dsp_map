@@ -72,7 +72,7 @@ rosbag play clip1.bag
 
 ## User Instructions
 ### Overview
-Our map handles noise from semantic and instance (Panoptic) segmentation image, depth image, pose, and object transfromation estimation to build an instance-aware semantic map. There are three modes that can be choosen: ZED2 Mode (__recommended__), Vitural KITTI2 Mode, and KITTI360 Mode. See below for difference and how to use each of them.
+Our map handles noise from semantic and instance (Panoptic) segmentation image, depth image, pose, and object transfromation estimation to build an instance-aware semantic map. There are three modes that can be choosen: ZED2 Mode (__recommended__), Superpoint Mode, and Static Mode. See below for difference and how to use each of them.
 
 ### ZED2 Mode (Recommended)
 SDK of getting depth image, 3D BBOX, instance masks, and pose from [ZED2 camera](https://www.stereolabs.com/docs) is used to realize real-time mapping. An additional semantic segmentation network can also be used to give semantic labels to all objects.
