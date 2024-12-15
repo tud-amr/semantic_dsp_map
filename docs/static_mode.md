@@ -45,7 +45,7 @@ Information about other optional parameters can be found in [Parameter Table](pa
 roslaunch semantic_dsp_map kitti360.launch
 ```
 
-- Run global mapping 
+- Run global mapping. If you want to run global mapping node, please first clone and build [dsp_global_map](git@github.com:g-ch/dsp_global_mapping.git) and check its readme. 
 ```
 roslaunch dsp_global_mapping global_mapping.launch out_file:=path_to_save_ply_global_map write_color:=1
 ```
@@ -56,4 +56,4 @@ mask_kpts_msgs::MaskGroup /mask_group_super_glued
 sensor_msgs::Image  /camera_depth_image
 geometry_msgs::PoseStamped /camera_pose
 ```
-where in ```/mask_group_super_glued``` topic, only one mask with label "static" is required. Pixel value (one channel) in the mask stands for label id.
+where in ```/mask_group_super_glued``` topic, only one mask with label "static" is required. Pixel value (one channel) in the mask stands for label id. This mask can be acquired by tools like MMSeg. The feature points are not required.

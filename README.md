@@ -1,17 +1,22 @@
-# Semantic DSP Map
+# <center>Semantic DSP Map</center>
+
+<center>
+
 __Particle-based Instance-aware Semantic Occupancy Mapping in Dynamic Environments__
 
 [Gang Chen](https://g-ch.github.io/), Zhaoying Wang, [Wei Dong](https://scholar.google.com/citations?user=hbaEVRMAAAAJ&hl=en), [Javier Alonso-Mora](https://autonomousrobots.nl/people/)
 
-[[PDF]](https://www.arxiv.org/abs/2409.11975)
+Accepted by IEEE T-RO [[PDF]](https://www.arxiv.org/abs/2409.11975)
  <!-- [[Youtube]](https://youtu.be/OIJDZRtHFHE) -->
+
 
 [![IMAGE ALT TEXT HERE](assets/youtube2.png)](https://youtu.be/OIJDZRtHFHE)
 
+</center>
 
 ## Description
-This repository contains the code for paper "Particle-based Instance-aware Semantic Occupancy Mapping in Dynamic Environments". This paper is still under review. 
-This map is an instance-aware ego-centric semantic occupancy map for dynamic environments with objects like vehicles and pedestrians. Static environment is also suitable.
+This repository contains the code for paper "Particle-based Instance-aware Semantic Occupancy Mapping in Dynamic Environments".
+This map is an instance-aware ego-centric semantic occupancy map for dynamic environments with objects like vehicles and pedestrians. The map uses particles as the basic representation and outputs occupancy voxels for tasks like motion planning. Static environment is also suitable.
 
 The C++ source file for mapping is in the ```include/``` folder and a ROS1 node example that uses the map is given in ```src/mapping.cpp```
 
@@ -72,7 +77,7 @@ rosbag play clip1.bag
 
 ## User Instructions
 ### Overview
-Our map handles noise from semantic and instance (Panoptic) segmentation image, depth image, pose, and object transfromation estimation to build an instance-aware semantic map. There are three modes that can be choosen: ZED2 Mode (__recommended__), Superpoint Mode, and Static Mode. See below for difference and how to use each of them.
+Our map handles noise from semantic and instance (Panoptic) segmentation image, depth image, pose, and object transfromation estimation to build an instance-aware semantic map. There are three modes that can be choosen: ZED2 Mode (__recommended__), Superpoint Mode, and Static Mode. Below shows the instructions of these mode. __Before you use one of them, please read__ [this](docs/custom_files.md) to know the input __data format__ shared by all three modes.
 
 ### ZED2 Mode (Recommended)
 SDK of getting depth image, 3D BBOX, instance masks, and pose from [ZED2 camera](https://www.stereolabs.com/docs) is used to realize real-time mapping. An additional semantic segmentation network can also be used to give semantic labels to all objects.
