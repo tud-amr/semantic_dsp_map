@@ -99,8 +99,7 @@ public:
         
 #if BOOST_MODE == 1
         // Resize the depth image if in boost mode
-        // cv::resize(depth_value_mat, depth_value_mat, cv::Size(), g_image_rescale, g_image_rescale, cv::INTER_NEAREST);
-        resizeNearestNeighbor(depth_value_mat, depth_value_mat, g_image_rescale, g_image_rescale);
+        cv::resize(depth_value_mat, depth_value_mat, cv::Size(), g_image_rescale, g_image_rescale, cv::INTER_NEAREST);
 #endif
 
         // Calculate transformation matrix from camera frame to global frame
@@ -127,8 +126,7 @@ public:
             {
 #if BOOST_MODE == 1
                 // Resize the mask if in boost mode
-                // cv::resize(ins_seg_result[i].mask, ins_seg_result[i].mask, cv::Size(), g_image_rescale, g_image_rescale, cv::INTER_NEAREST);
-                resizeNearestNeighbor(ins_seg_result[i].mask, ins_seg_result[i].mask, g_image_rescale, g_image_rescale);
+                cv::resize(ins_seg_result[i].mask, ins_seg_result[i].mask, cv::Size(), g_image_rescale, g_image_rescale, cv::INTER_NEAREST);
 #endif
                 auto *ins_seg_this = &ins_seg_result[i];
                 // Merge the mask into track_id_mask by letting the pixels whose value is one to be the track id
@@ -173,8 +171,7 @@ public:
 
 #if BOOST_MODE == 1
                     // Resize the mask if in boost mode
-                    // cv::resize(ins_seg_this->mask, ins_seg_this->mask, cv::Size(), g_image_rescale, g_image_rescale, cv::INTER_NEAREST);
-                    resizeNearestNeighbor(ins_seg_this->mask, ins_seg_this->mask, g_image_rescale, g_image_rescale);
+                    cv::resize(ins_seg_this->mask, ins_seg_this->mask, cv::Size(), g_image_rescale, g_image_rescale, cv::INTER_NEAREST);
 #endif
 
 #if SETTING == 3 // ZED2
@@ -1098,58 +1095,6 @@ private:
         return (float)biggest_intersection_num / occupied_voxel_num;
     }
 
-    /// @brief Resize an image using nearest neighbor interpolation. This is to replace the cv::resize function for Jetson Boards.
-    /// @param input Input image.
-    /// @param output Output image.
-    /// @param scaleX Scale factor for the x-axis.
-    /// @param scaleY Scale factor for the y-axis.
-    void resizeNearestNeighbor(cv::Mat &input, cv::Mat &output, double scaleX, double scaleY) {
-        if (input.empty()) {
-            std::cerr << "Error: Input image is empty!" << std::endl;
-            return;
-        }
-
-        if (scaleX <= 0 || scaleY <= 0) {
-            std::cerr << "Error: Invalid scale factors! scaleX=" << scaleX << ", scaleY=" << scaleY << std::endl;
-            return;
-        }
-
-        // Compute new dimensions
-        int targetWidth = static_cast<int>(input.cols * scaleX);
-        int targetHeight = static_cast<int>(input.rows * scaleY);
-
-        // Allocate a temporary matrix to prevent corruption when input == output
-        cv::Mat tempOutput(targetHeight, targetWidth, input.type());
-
-        // Iterate over each pixel in the output image
-        for (int y = 0; y < targetHeight; ++y) {
-            for (int x = 0; x < targetWidth; ++x) {
-                // Find the nearest pixel in the input image
-                int srcX = static_cast<int>(x / scaleX);
-                int srcY = static_cast<int>(y / scaleY);
-
-                // Ensure indices are within bounds
-                srcX = std::min(srcX, input.cols - 1);
-                srcY = std::min(srcY, input.rows - 1);
-
-                // Copy pixel data (handles both grayscale and color images)
-                if (input.channels() == 1) {
-                    tempOutput.at<uchar>(y, x) = input.at<uchar>(srcY, srcX);
-                } else if (input.channels() == 3) {
-                    tempOutput.at<cv::Vec3b>(y, x) = input.at<cv::Vec3b>(srcY, srcX);
-                } else if (input.channels() == 4) {
-                    tempOutput.at<cv::Vec4b>(y, x) = input.at<cv::Vec4b>(srcY, srcX);
-                }
-            }
-        }
-
-        // Properly copy the resized image to output
-        if (&input == &output) {
-            tempOutput.copyTo(output);  // Ensures in-place operation works safely
-        } else {
-            output = tempOutput;  // Assign the temporary output normally
-        }
-    }
 
 
 };
