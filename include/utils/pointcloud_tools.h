@@ -78,8 +78,6 @@ public:
         }
     }
 
-
-
     /// @brief Generate a semantic point cloud using the depth image and instance masks. 
     /// @param depth_value_mat Depth value matrix. Float.
     /// @param ins_seg_result Instance segmentation result.
@@ -99,7 +97,8 @@ public:
         
 #if BOOST_MODE == 1
         // Resize the depth image if in boost mode
-        cv::resize(depth_value_mat, depth_value_mat, cv::Size(), g_image_rescale, g_image_rescale, cv::INTER_NEAREST);
+        // cv::resize(depth_value_mat, depth_value_mat, cv::Size(), g_image_rescale, g_image_rescale, cv::INTER_LINEAR);
+        manualResize<float>(depth_value_mat, depth_value_mat, g_image_rescale);
 #endif
 
         // Calculate transformation matrix from camera frame to global frame
@@ -126,7 +125,8 @@ public:
             {
 #if BOOST_MODE == 1
                 // Resize the mask if in boost mode
-                cv::resize(ins_seg_result[i].mask, ins_seg_result[i].mask, cv::Size(), g_image_rescale, g_image_rescale, cv::INTER_NEAREST);
+                // cv::resize(ins_seg_result[i].mask, ins_seg_result[i].mask, cv::Size(), g_image_rescale, g_image_rescale, cv::INTER_LINEAR);
+                manualResize<uchar>(ins_seg_result[i].mask, ins_seg_result[i].mask, g_image_rescale);
 #endif
                 auto *ins_seg_this = &ins_seg_result[i];
                 // Merge the mask into track_id_mask by letting the pixels whose value is one to be the track id
@@ -171,7 +171,8 @@ public:
 
 #if BOOST_MODE == 1
                     // Resize the mask if in boost mode
-                    cv::resize(ins_seg_this->mask, ins_seg_this->mask, cv::Size(), g_image_rescale, g_image_rescale, cv::INTER_NEAREST);
+                    // cv::resize(ins_seg_this->mask, ins_seg_this->mask, cv::Size(), g_image_rescale, g_image_rescale, cv::INTER_LINEAR);
+                    manualResize<uchar>(ins_seg_this->mask, ins_seg_this->mask, g_image_rescale);
 #endif
 
 #if SETTING == 3 // ZED2
@@ -1096,6 +1097,40 @@ private:
     }
 
 
+    /// @brief Resize a cv::Mat manually because cv::resize is not working on Jetson Boards.
+    /// @param src Source cv::Mat
+    /// @param dst Destination cv::Mat
+    /// @param scale Scale factor
+    template<typename T>
+    void manualResize(const cv::Mat& src, cv::Mat& dst, float scale) {
+        // Create temporary Mat if src and dst are the same
+        cv::Mat temp;
+        const cv::Mat* src_ptr = &src;
+        
+        if (&src == &dst) {
+            temp = src.clone();
+            src_ptr = &temp;
+        }
+        
+        int new_rows = static_cast<int>(src.rows * scale);
+        int new_cols = static_cast<int>(src.cols * scale);
+        dst = cv::Mat(new_rows, new_cols, src.type());
+
+        float scale_inv = 1.f / scale;
+
+        for (int i = 0; i < new_rows; i++) {
+            for (int j = 0; j < new_cols; j++) {
+                int src_i = static_cast<int>(i * scale_inv);
+                int src_j = static_cast<int>(j * scale_inv);
+                
+                // Ensure we don't go out of bounds
+                src_i = std::min(src_i, src_ptr->rows - 1);
+                src_j = std::min(src_j, src_ptr->cols - 1);
+                
+                dst.at<T>(i, j) = src_ptr->at<T>(src_i, src_j);
+            }
+        }
+    }
 
 };
 
