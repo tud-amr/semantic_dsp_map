@@ -1,8 +1,8 @@
 depth_image_topic: /camera/depth_repub
 camera_pose_topic: /camera/pose_repub
 mask_group_topic: /mask_group_super_glued
-frame_id: zed2
-visualize_with_zero_center: true
+frame_id: map
+visualize_with_zero_center: false
 if_out_evaluation_format: false # Will show FOV with bright color if false
 if_output_freespace: false
 

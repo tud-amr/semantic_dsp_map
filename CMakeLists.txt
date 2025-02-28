@@ -32,6 +32,13 @@ include_directories(${Eigen_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${YAML_CPP_INCLUDE_DIR})
 
+add_subdirectory(${PROJECT_SOURCE_DIR}/include/backward-cpp)
+add_definitions(-DBACKWARD_HAS_DW=1 -DBACKWARD_HAS_BFD=0)
+include_directories(${PROJECT_SOURCE_DIR}/backward-cpp)
+
 add_executable(mapping src/mapping.cpp)
-target_link_libraries(mapping ${PCL_LIBRARIES} ${catkin_LIBRARIES} ${OpenCV_LIBS} ${YAML_CPP_LIBRARIES})
+target_link_libraries(mapping PUBLIC Backward::Interface dw ${PCL_LIBRARIES} ${catkin_LIBRARIES} ${OpenCV_LIBS} ${YAML_CPP_LIBRARIES})
+
+add_executable(obstacle_info_pub src/obstacle_info_pub.cpp)
+target_link_libraries(obstacle_info_pub ${PCL_LIBRARIES} ${catkin_LIBRARIES} ${OpenCV_LIBS} ${YAML_CPP_LIBRARIES})
 

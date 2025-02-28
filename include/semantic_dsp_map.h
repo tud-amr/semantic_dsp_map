@@ -1265,9 +1265,15 @@ private:
                     pt.y = voxel_pos.y() - camera_position.y();
                     pt.z = voxel_pos.z() - camera_position.z();
                 }else{
-                    pt.x = voxel_pos.x();
-                    pt.y = voxel_pos.y();
-                    pt.z = voxel_pos.z();
+                    // pt.x = voxel_pos.x();
+                    // pt.y = voxel_pos.y();
+                    // pt.z = voxel_pos.z();
+
+                    //************************* Test code. Change to vicon coordinate. *************************
+                    pt.x = voxel_pos.z() + 0.351454;
+                    pt.y = -voxel_pos.x() + 0.0679996;
+                    pt.z = -voxel_pos.y() + 0.0601097;
+                    //********************************************************************************************
                 }
 
 
@@ -1280,7 +1286,8 @@ private:
                         // Adjust to display the color map in the right axis
                         int color_index = std::min(std::max(static_cast<int>((-pt.z+2.f)*51.2f), 0), 255);
 #else
-                        int color_index = std::min(std::max(static_cast<int>((pt.y+2.f)*51.2f), 0), 255);
+                        // int color_index = std::min(std::max(static_cast<int>((pt.y+2.f)*51.2f), 0), 255);
+                        int color_index = std::min(std::max(static_cast<int>((pt.z+2.f)*51.2f), 0), 255);
 #endif
             
                         pt.r = color_map_jet_256_[color_index](0);

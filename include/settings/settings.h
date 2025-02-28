@@ -98,9 +98,9 @@
     constexpr float g_depth_range_max = 30.f; ///< Depth range max. Unit: meter. Usually we suppose the depth range is big than the max visiable depth of the map, i.e., every point in the map is visiable unless there is occlusion. Make the map smaller if you want to use a smaller depth range.
 
 #elif SETTING == 3 ///< ZED2
-    constexpr uint8_t C_VOXEL_NUM_AXIS_X_N = 7;
+    constexpr uint8_t C_VOXEL_NUM_AXIS_X_N = 6;
     constexpr uint8_t C_VOXEL_NUM_AXIS_Y_N = 5;  // Y is the height. Use smaller range to reduce the computation.
-    constexpr uint8_t C_VOXEL_NUM_AXIS_Z_N = 7;
+    constexpr uint8_t C_VOXEL_NUM_AXIS_Z_N = 6;
 
     constexpr uint8_t C_MAX_PARTICLE_NUM_PER_VOXEL_N = 2;  ///< Number of bits used to store the particle index in a voxel. At least 1. The first particle is the time particle. The max normal particle number in a voxel is then 2^C_MAX_PARTICLE_NUM_PER_VOXEL_N - 1
     constexpr float C_VOXEL_SIZE = 0.15f; ///< Voxel size. Unit: meter
